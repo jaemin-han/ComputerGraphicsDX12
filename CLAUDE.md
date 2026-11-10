@@ -2,11 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-프로젝트 문맥은 아래 두 문서에 있다. 내용을 여기에 중복해서 적지 않는다.
+프로젝트 문맥과 공용 규칙은 README에 있다. 내용을 여기에 중복해서 적지 않는다.
 
 @README.md
-
-@AGENTS.md
 
 ## Claude Code 전용
 
