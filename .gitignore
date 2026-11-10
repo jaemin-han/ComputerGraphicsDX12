@@ -1,0 +1,7 @@
+# Visual Studio
+.vs/
+*.user
+
+# MSBuild output and intermediates
+x64/
+Computer.*/
