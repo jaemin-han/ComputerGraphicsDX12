@@ -16,6 +16,8 @@
 #include "Util.h"
 #include "Window.h"
 
+using namespace DirectX;
+
 namespace {
 
 constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -25,6 +27,19 @@ constexpr bool kEnableDebugLayer = true;
 #else
 constexpr bool kEnableDebugLayer = false;
 #endif
+
+// DirectXMath는 행 우선이고 HLSL cbuffer는 기본이 열 우선이라 전치해서 넣는다.
+// 법선 행렬(역행렬의 전치)을 전치하면 역행렬이 되므로 invTranspose에는
+// 역행렬을 그대로 넣는다.
+MeshConstants MakeMeshConstants(FXMMATRIX model, CXMMATRIX view,
+                                CXMMATRIX projection) {
+    MeshConstants constants;
+    XMStoreFloat4x4(&constants.model, XMMatrixTranspose(model));
+    XMStoreFloat4x4(&constants.invTranspose, XMMatrixInverse(nullptr, model));
+    XMStoreFloat4x4(&constants.view, XMMatrixTranspose(view));
+    XMStoreFloat4x4(&constants.projection, XMMatrixTranspose(projection));
+    return constants;
+}
 
 } // namespace
 
@@ -47,6 +62,7 @@ void Engine::Initialize() {
     CreateSwapChain();
     CreateRenderTargets();
     CreatePipeline();
+    CreateConstantBuffers();
 
     // Direct3D는 기본적으로 시계 방향 삼각형을 앞면으로 본다.
     m_triangle = CreateMesh({
@@ -193,9 +209,19 @@ void Engine::CreateRenderTargets() {
 }
 
 void Engine::CreatePipeline() {
-    // 삼각형은 상수도 텍스처도 쓰지 않으므로 루트 시그니처는 입력 어셈블러만
-    // 허용하면 된다.
+    // 루트 시그니처는 셰이더가 받는 인자 목록이다. 지금은 VS의 b0 하나다.
+    // b0는 드로우마다 바뀌므로, 디스크립터를 거치지 않고 GPU 주소를 바로
+    // 넘기는 루트 CBV로 둔다.
+    D3D12_ROOT_PARAMETER rootParameters[1] = {};
+    D3D12_ROOT_PARAMETER &meshConstants = rootParameters[kRootMeshConstants];
+    meshConstants.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    meshConstants.Descriptor.ShaderRegister = 0; // b0
+    meshConstants.Descriptor.RegisterSpace = 0;
+    meshConstants.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
     D3D12_ROOT_SIGNATURE_DESC rootDesc = {};
+    rootDesc.NumParameters = _countof(rootParameters);
+    rootDesc.pParameters = rootParameters;
     rootDesc.Flags =
         D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
@@ -259,6 +285,24 @@ void Engine::CreatePipeline() {
           "CreateGraphicsPipelineState");
 }
 
+void Engine::CreateConstantBuffers() {
+    static_assert(sizeof(MeshConstants) <= kConstantSlotSize,
+                  "MeshConstants must fit in one constant buffer slot.");
+
+    // GPU가 이전 프레임의 칸을 아직 읽고 있을 수 있으므로 프레임마다 따로 둔다.
+    for (FrameResource &frame : m_frames) {
+        frame.constantBuffer =
+            CreateUploadBuffer(UINT64(kConstantSlotSize) * kMaxDrawsPerFrame);
+
+        // 업로드 힙은 Map한 채로 둬도 된다. 프로그램이 끝날 때까지 이 주소로
+        // 쓴다.
+        void *mapped = nullptr;
+        const D3D12_RANGE noRead = {0, 0};
+        Check(frame.constantBuffer->Map(0, &noRead, &mapped), "Map");
+        frame.mappedConstants = static_cast<BYTE *>(mapped);
+    }
+}
+
 void Engine::CreateFence() {
     Check(
         m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)),
@@ -269,11 +313,9 @@ void Engine::CreateFence() {
         Check(HRESULT_FROM_WIN32(GetLastError()), "CreateEvent");
 }
 
-Mesh Engine::CreateMesh(const std::vector<Vertex> &vertices) {
-    const UINT size = static_cast<UINT>(sizeof(Vertex) * vertices.size());
-
-    // 업로드 힙은 CPU가 쓰고 GPU가 읽을 수 있어서, 작은 정점 데이터를 위해
-    // 복사 패스를 따로 둘 필요가 없다.
+// 업로드 힙은 CPU가 쓰고 GPU가 읽을 수 있어서, 작은 데이터는 복사 패스 없이
+// 여기서 바로 읽힌다.
+ComPtr<ID3D12Resource> Engine::CreateUploadBuffer(UINT64 size) {
     D3D12_HEAP_PROPERTIES heap = {};
     heap.Type = D3D12_HEAP_TYPE_UPLOAD;
 
@@ -286,12 +328,19 @@ Mesh Engine::CreateMesh(const std::vector<Vertex> &vertices) {
     desc.SampleDesc.Count = 1;
     desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    Mesh mesh;
+    ComPtr<ID3D12Resource> buffer;
     Check(m_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
                                             D3D12_RESOURCE_STATE_GENERIC_READ,
-                                            nullptr,
-                                            IID_PPV_ARGS(&mesh.vertexBuffer)),
+                                            nullptr, IID_PPV_ARGS(&buffer)),
           "CreateCommittedResource");
+    return buffer;
+}
+
+Mesh Engine::CreateMesh(const std::vector<Vertex> &vertices) {
+    const UINT size = static_cast<UINT>(sizeof(Vertex) * vertices.size());
+
+    Mesh mesh;
+    mesh.vertexBuffer = CreateUploadBuffer(size);
 
     void *mapped = nullptr;
     const D3D12_RANGE noRead = {0, 0};
@@ -305,6 +354,20 @@ Mesh Engine::CreateMesh(const std::vector<Vertex> &vertices) {
     mesh.vertexBufferView.SizeInBytes = size;
     mesh.vertexCount = static_cast<UINT>(vertices.size());
     return mesh;
+}
+
+void Engine::SetMeshConstants(FrameResource &frame, UINT drawIndex,
+                              const MeshConstants &constants) {
+    if (drawIndex >= kMaxDrawsPerFrame)
+        throw std::runtime_error("Too many draws for the constant buffer.");
+
+    // drawIndex번 칸에 쓰고, 다음 드로우가 b0를 그 칸에서 읽도록 주소를
+    // 기록한다. GPU는 이 주소를 커맨드 리스트를 실행할 때 읽는다.
+    const UINT64 offset = UINT64(drawIndex) * kConstantSlotSize;
+    std::memcpy(frame.mappedConstants + offset, &constants, sizeof(constants));
+    m_commandList->SetGraphicsRootConstantBufferView(
+        kRootMeshConstants,
+        frame.constantBuffer->GetGPUVirtualAddress() + offset);
 }
 
 void Engine::DrawMesh(const Mesh &mesh) {
@@ -356,7 +419,18 @@ void Engine::Render() {
 
     m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    DrawMesh(m_triangle);
+
+    // 같은 삼각형을 b0만 바꿔 세 번 그린다. 드로우마다 상수 칸이 달라야 GPU가
+    // 실행할 때 각자 자기 위치를 읽는다.
+    const float offsetsX[kMaxDrawsPerFrame] = {-0.6f, 0.0f, 0.6f};
+    for (UINT i = 0; i < kMaxDrawsPerFrame; ++i) {
+        const XMMATRIX model = XMMatrixScaling(0.5f, 0.5f, 1.0f) *
+                               XMMatrixTranslation(offsetsX[i], 0.0f, 0.0f);
+        SetMeshConstants(
+            frame, i,
+            MakeMeshConstants(model, XMMatrixIdentity(), XMMatrixIdentity()));
+        DrawMesh(m_triangle);
+    }
 
     Transition(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET,
                D3D12_RESOURCE_STATE_PRESENT);
