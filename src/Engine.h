@@ -6,27 +6,13 @@
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 
-#include <vector>
-
+#include "FrameResource.h"
 #include "Mesh.h"
 
 using Microsoft::WRL::ComPtr;
 
-// 프레임 하나가 소유하는 자원이다. GPU가 그 프레임을 실행하는 동안 유지돼야
-// 한다.
-struct FrameResource {
-    // 기록한 명령은 GPU가 끝낼 때까지 이 메모리에 남는다.
-    ComPtr<ID3D12CommandAllocator> commandAllocator;
-    // 이 프레임을 제출한 뒤 Signal한 값이다. 펜스가 이 값에 도달하면 할당자와
-    // 상수 버퍼를 다시 쓸 수 있다.
-    UINT64 fenceValue = 0;
-    // 드로우마다 b0 칸 하나를 쓰는 업로드 버퍼와, 한 번 Map해 둔 CPU 주소다.
-    ComPtr<ID3D12Resource> constantBuffer;
-    BYTE *mappedConstants = nullptr;
-};
-
 // 프로그램이 도는 동안 main()에서 하나만 만든다. 디바이스부터 펜스까지 GPU
-// 객체를 모두 갖고, 메시를 만들고 그린다.
+// 객체를 갖고, 루트 시그니처와 PSO를 정하고, 한 프레임의 드로우를 기록한다.
 class Engine {
   public:
     ~Engine();
@@ -44,25 +30,16 @@ class Engine {
     // 한 프레임에 그릴 수 있는 드로우 수다. 드로우마다 상수 버퍼 칸을 하나씩
     // 쓴다.
     static constexpr UINT kMaxDrawsPerFrame = 3;
-    // 상수 버퍼 주소는 256바이트 배수여야 하므로 칸 크기도 256바이트다.
-    static constexpr UINT kConstantSlotSize =
-        D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
     // 루트 시그니처의 파라미터 번호다.
     static constexpr UINT kRootMeshConstants = 0;
 
     void CreateDevice();
+    void CreateFrameResources();
     void CreateCommandObjects();
     void CreateSwapChain();
     void CreateRenderTargets();
     void CreatePipeline();
-    void CreateConstantBuffers();
     void CreateFence();
-
-    ComPtr<ID3D12Resource> CreateUploadBuffer(UINT64 size);
-    Mesh CreateMesh(const MeshData &data);
-    void SetMeshConstants(FrameResource &frame, UINT drawIndex,
-                          const MeshConstants &constants);
-    void DrawMesh(const Mesh &mesh);
 
     void Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES before,
                     D3D12_RESOURCE_STATES after);

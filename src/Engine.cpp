@@ -8,11 +8,11 @@
 
 #include <climits>
 #include <cstddef>
-#include <cstring>
 #include <exception>
 #include <iostream>
 #include <stdexcept>
 
+#include "ConstantBuffers.h"
 #include "Util.h"
 #include "Window.h"
 
@@ -41,13 +41,8 @@ MeshConstants MakeMeshConstants(FXMMATRIX model, CXMMATRIX view,
     return constants;
 }
 
-void CopyToBuffer(ID3D12Resource *buffer, const void *data, size_t size) {
-    void *mapped = nullptr;
-    const D3D12_RANGE noRead = {0, 0};
-    Check(buffer->Map(0, &noRead, &mapped), "Map");
-    std::memcpy(mapped, data, size);
-    buffer->Unmap(0, nullptr);
-}
+static_assert(sizeof(MeshConstants) <= FrameResource::kConstantSlotSize,
+              "MeshConstants must fit in one constant buffer slot.");
 
 } // namespace
 
@@ -66,11 +61,11 @@ Engine::~Engine() {
 void Engine::Initialize() {
     m_window = CreateAppWindow(kWidth, kHeight, L"Hello DX12");
     CreateDevice();
+    CreateFrameResources();
     CreateCommandObjects();
     CreateSwapChain();
     CreateRenderTargets();
     CreatePipeline();
-    CreateConstantBuffers();
 
     // Direct3D는 기본적으로 시계 방향 삼각형을 앞면으로 본다. 인덱스도 그
     // 순서로 정점을 가리킨다.
@@ -81,7 +76,7 @@ void Engine::Initialize() {
         {{-0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}},
     };
     triangle.indices = {0, 1, 2};
-    m_triangle = CreateMesh(triangle);
+    m_triangle = Mesh::Create(m_device.Get(), triangle);
 
     CreateFence();
 }
@@ -149,19 +144,19 @@ void Engine::CreateDevice() {
     }
 }
 
+void Engine::CreateFrameResources() {
+    // GPU가 이전 프레임의 할당자와 상수 칸을 아직 쓰고 있을 수 있으므로
+    // 프레임마다 따로 둔다.
+    for (FrameResource &frame : m_frames)
+        frame.Create(m_device.Get(), kMaxDrawsPerFrame);
+}
+
 void Engine::CreateCommandObjects() {
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     Check(
         m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_commandQueue)),
         "CreateCommandQueue");
-
-    for (FrameResource &frame : m_frames) {
-        Check(m_device->CreateCommandAllocator(
-                  D3D12_COMMAND_LIST_TYPE_DIRECT,
-                  IID_PPV_ARGS(&frame.commandAllocator)),
-              "CreateCommandAllocator");
-    }
 
     // 리스트는 하나면 충분하다. Reset할 때 붙인 할당자에 기록할 뿐이고,
     // 제출한 직후 바로 Reset할 수 있다.
@@ -297,24 +292,6 @@ void Engine::CreatePipeline() {
           "CreateGraphicsPipelineState");
 }
 
-void Engine::CreateConstantBuffers() {
-    static_assert(sizeof(MeshConstants) <= kConstantSlotSize,
-                  "MeshConstants must fit in one constant buffer slot.");
-
-    // GPU가 이전 프레임의 칸을 아직 읽고 있을 수 있으므로 프레임마다 따로 둔다.
-    for (FrameResource &frame : m_frames) {
-        frame.constantBuffer =
-            CreateUploadBuffer(UINT64(kConstantSlotSize) * kMaxDrawsPerFrame);
-
-        // 업로드 힙은 Map한 채로 둬도 된다. 프로그램이 끝날 때까지 이 주소로
-        // 쓴다.
-        void *mapped = nullptr;
-        const D3D12_RANGE noRead = {0, 0};
-        Check(frame.constantBuffer->Map(0, &noRead, &mapped), "Map");
-        frame.mappedConstants = static_cast<BYTE *>(mapped);
-    }
-}
-
 void Engine::CreateFence() {
     Check(
         m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)),
@@ -323,79 +300,6 @@ void Engine::CreateFence() {
     m_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     if (!m_fenceEvent)
         Check(HRESULT_FROM_WIN32(GetLastError()), "CreateEvent");
-}
-
-// 업로드 힙은 CPU가 쓰고 GPU가 읽을 수 있어서, 작은 데이터는 복사 패스 없이
-// 여기서 바로 읽힌다.
-ComPtr<ID3D12Resource> Engine::CreateUploadBuffer(UINT64 size) {
-    D3D12_HEAP_PROPERTIES heap = {};
-    heap.Type = D3D12_HEAP_TYPE_UPLOAD;
-
-    D3D12_RESOURCE_DESC desc = {};
-    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    desc.Width = size;
-    desc.Height = 1;
-    desc.DepthOrArraySize = 1;
-    desc.MipLevels = 1;
-    desc.SampleDesc.Count = 1;
-    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    ComPtr<ID3D12Resource> buffer;
-    Check(m_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                                            D3D12_RESOURCE_STATE_GENERIC_READ,
-                                            nullptr, IID_PPV_ARGS(&buffer)),
-          "CreateCommittedResource");
-    return buffer;
-}
-
-Mesh Engine::CreateMesh(const MeshData &data) {
-    const UINT vertexBytes =
-        static_cast<UINT>(sizeof(Vertex) * data.vertices.size());
-    const UINT indexBytes =
-        static_cast<UINT>(sizeof(uint32_t) * data.indices.size());
-
-    // 정점 버퍼와 인덱스 버퍼는 같은 방식으로 업로드 힙에 올린다. 차이는 뷰가
-    // 알려 주는 해석뿐이다.
-    Mesh mesh;
-    mesh.vertexBuffer = CreateUploadBuffer(vertexBytes);
-    mesh.indexBuffer = CreateUploadBuffer(indexBytes);
-    CopyToBuffer(mesh.vertexBuffer.Get(), data.vertices.data(), vertexBytes);
-    CopyToBuffer(mesh.indexBuffer.Get(), data.indices.data(), indexBytes);
-
-    // 정점 버퍼는 정점 하나의 크기(Stride)로 잘라 읽는다.
-    mesh.vertexBufferView.BufferLocation =
-        mesh.vertexBuffer->GetGPUVirtualAddress();
-    mesh.vertexBufferView.StrideInBytes = sizeof(Vertex);
-    mesh.vertexBufferView.SizeInBytes = vertexBytes;
-
-    // 인덱스 버퍼는 형식(32비트 정수)으로 읽는다.
-    mesh.indexBufferView.BufferLocation =
-        mesh.indexBuffer->GetGPUVirtualAddress();
-    mesh.indexBufferView.Format = DXGI_FORMAT_R32_UINT;
-    mesh.indexBufferView.SizeInBytes = indexBytes;
-
-    mesh.indexCount = static_cast<UINT>(data.indices.size());
-    return mesh;
-}
-
-void Engine::SetMeshConstants(FrameResource &frame, UINT drawIndex,
-                              const MeshConstants &constants) {
-    if (drawIndex >= kMaxDrawsPerFrame)
-        throw std::runtime_error("Too many draws for the constant buffer.");
-
-    // drawIndex번 칸에 쓰고, 다음 드로우가 b0를 그 칸에서 읽도록 주소를
-    // 기록한다. GPU는 이 주소를 커맨드 리스트를 실행할 때 읽는다.
-    const UINT64 offset = UINT64(drawIndex) * kConstantSlotSize;
-    std::memcpy(frame.mappedConstants + offset, &constants, sizeof(constants));
-    m_commandList->SetGraphicsRootConstantBufferView(
-        kRootMeshConstants,
-        frame.constantBuffer->GetGPUVirtualAddress() + offset);
-}
-
-void Engine::DrawMesh(const Mesh &mesh) {
-    m_commandList->IASetVertexBuffers(0, 1, &mesh.vertexBufferView);
-    m_commandList->IASetIndexBuffer(&mesh.indexBufferView);
-    m_commandList->DrawIndexedInstanced(mesh.indexCount, 1, 0, 0, 0);
 }
 
 void Engine::Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES before,
@@ -449,10 +353,16 @@ void Engine::Render() {
     for (UINT i = 0; i < kMaxDrawsPerFrame; ++i) {
         const XMMATRIX model = XMMatrixScaling(0.5f, 0.5f, 1.0f) *
                                XMMatrixTranslation(offsetsX[i], 0.0f, 0.0f);
-        SetMeshConstants(
-            frame, i,
-            MakeMeshConstants(model, XMMatrixIdentity(), XMMatrixIdentity()));
-        DrawMesh(m_triangle);
+        const MeshConstants constants =
+            MakeMeshConstants(model, XMMatrixIdentity(), XMMatrixIdentity());
+
+        // 칸에 쓰는 일은 프레임 자원이, 그 주소를 b0에 연결하는 일은 루트
+        // 시그니처를 가진 엔진이 한다.
+        const D3D12_GPU_VIRTUAL_ADDRESS address =
+            frame.WriteConstants(i, &constants, sizeof(constants));
+        m_commandList->SetGraphicsRootConstantBufferView(kRootMeshConstants,
+                                                         address);
+        m_triangle.Draw(m_commandList.Get());
     }
 
     Transition(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET,

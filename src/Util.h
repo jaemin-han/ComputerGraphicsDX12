@@ -4,11 +4,21 @@
 
 #include <d3d12.h>
 #include <d3d12sdklayers.h>
+#include <wrl/client.h>
 
+#include <cstddef>
 #include <vector>
 
 // hr이 실패 코드면 동작 이름을 담은 std::runtime_error를 던진다.
 void Check(HRESULT hr, const char *action);
+
+// 업로드 힙에 size바이트 버퍼를 만든다. CPU가 쓰고 GPU가 읽을 수 있어서,
+// 작은 데이터는 복사 패스 없이 여기서 바로 읽힌다.
+Microsoft::WRL::ComPtr<ID3D12Resource> CreateUploadBuffer(ID3D12Device *device,
+                                                          UINT64 size);
+
+// 업로드 버퍼를 잠깐 Map해 data를 복사한다.
+void CopyToBuffer(ID3D12Resource *buffer, const void *data, size_t size);
 
 // 빌드가 실행 파일 옆에 둔 .cso 파일을 읽는다.
 std::vector<char> LoadCompiledShader(const char *fileName);

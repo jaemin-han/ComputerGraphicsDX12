@@ -19,6 +19,7 @@ Part 2(DX11)에서 배운 내용을 DX12로 옮기며 학습하고, 결과를 �
 - **완료:** 엔진과 메시 분리. 사용자가 "엔진이 메시를 갖고 직접 만들고 그린다, 메시는 데이터만 갖는다"로 정했다. 엔진은 싱글톤 패턴 없이 `main()` 에서 하나 만든다.
 - **완료:** 드로우별 상수 b0. 사용자가 "프레임마다 256B × 3 칸, i번째 드로우는 i번 칸, 펜스 대기 뒤 재사용"과 "b0는 루트 CBV"를 정했다. 같은 삼각형을 b0만 바꿔 세 번 그린다.
 - **완료:** 인덱스 버퍼. `Mesh` 에 인덱스 버퍼를 더하고, 같은 삼각형 3개를 `DrawIndexedInstanced` 로 그린다. 화면은 이전 단계와 같다.
+- **완료:** 메시와 프레임 자원 분리(리팩터링). 사용자 요청으로 `Engine.cpp` 의 메시 함수를 떼어 냈다. `Mesh` 가 자기 버퍼를 만들고 그리며(`Mesh::Create`, `Mesh::Draw`), 드로우별 상수 칸 쓰기는 메시가 아니라 `FrameResource::WriteConstants` 가 맡는다. 화면은 이전 단계와 같다.
 - **진행 중:** 없음. 다음은 구와 바닥, 카메라, 깊이 버퍼다. 사용자 요청으로 한 단계씩 나눠 진행한다.
 - **다음 목표:** Part 2의 레이 씬을 DX12로 렌더링한다. 필요 범위는 `1차 목표: 레이 씬` 절에 있다.
 
@@ -28,9 +29,9 @@ Part 2(DX11)에서 배운 내용을 DX12로 옮기며 학습하고, 결과를 �
 
 **최신 기록**
 
-- 변경한 파일 — `src/Mesh.h` 에 CPU 데이터인 `MeshData`(정점, `uint32_t` 인덱스)를 더하고, `Mesh` 에 인덱스 버퍼와 `D3D12_INDEX_BUFFER_VIEW`, `indexCount` 를 넣었다(`vertexCount` 는 뺐다). `src/Engine.*` 의 `CreateMesh()` 는 `MeshData` 를 받아 정점과 인덱스를 각각 업로드 버퍼에 올리고(`CopyToBuffer()`), `DrawMesh()` 는 `IASetIndexBuffer` 뒤 `DrawIndexedInstanced` 를 기록한다. 삼각형 인덱스는 `{0, 1, 2}` 다. 이전 커밋 `4c1247d` 에서 드로우별 상수 b0(루트 CBV, 프레임마다 256B × 3 칸)를 넣었다.
-- 검증 결과 — Claude Code가 Debug 전체 빌드와 실행을 확인했다. stderr에 D3D12 메시지가 없고 종료 코드 0으로 끝난다. 화면을 `4c1247d` 때 캡처와 비교했더니 클라이언트 영역에서 2픽셀 간격으로 표본 226,490개를 비교해 다른 픽셀이 0개였다. 사용자 눈으로 본 확인은 `미실행`.
-- 다음 할 일 — 구와 바닥, 카메라, 깊이 버퍼를 한 단계씩 넣는다. 이 작업을 한 번에 구현한 결과가 `git stash` 의 `stash@{0}`("WIP: sphere scene with depth buffer")에 있다. 정점 형식(위치, 노멀, UV), `Geometry.*`(직접 작성한 구와 사각형 생성), 궤도 카메라, `D32_FLOAT` 깊이 버퍼, `MeshVertexShader`/`NormalPixelShader` 가 들어 있다. 단계별로 나눠 다시 적용할 때 참고하고, 다 옮기면 버린다. 그다음 텍스처와 스카이 패스, 레이 PS 순서다. 레이 씬에서 크기가 다른 b1(512B)이 섞이면 "i번 칸" 대신 지금까지 쓴 바이트 수로 칸을 나눌지 사용자가 정한다. 학습에서 남은 약점은 배리어는 리소스를 받고 Clear와 OMSet은 디스크립터 핸들을 받는 이유, 디스크립터 칸을 덮어쓰거나 리소스를 해제할 때의 영향, 루트 시그니처다. 사용자 결정 필요: 전체 계획의 판단 1 기준 조정, 레이 씬의 포트폴리오 포함 여부, Part 2 자산과 레이 셰이더를 가져올지.
+- 변경한 파일 — 동작은 그대로 두고 구조만 바꿨다. `src/Mesh.h`, 새 `src/Mesh.cpp`: `Mesh` 를 private 멤버를 가진 클래스로 바꾸고 `Mesh::Create(device, MeshData)`, `Mesh::Draw(commandList)` 를 둔다(디바이스와 리스트는 인자로 받는다). 새 `src/FrameResource.*`: `Engine.h` 에서 옮긴 `FrameResource` 에 `Create(device, slotCount)`(할당자, 상수 업로드 버퍼, 계속 Map)와 `WriteConstants(slot, data, size)`(칸에 쓰고 GPU 주소 반환)를 두고, `kConstantSlotSize` 도 여기로 옮겼다. 새 `src/ConstantBuffers.h`: `MeshConstants` 를 `Mesh.h` 에서 옮겼다. `src/Util.*`: `CreateUploadBuffer(device, size)`, `CopyToBuffer()` 를 옮겼다. `src/Engine.*`: `CreateMesh`, `SetMeshConstants`, `DrawMesh`, `CreateUploadBuffer`, `CreateConstantBuffers` 를 지우고 `CreateFrameResources()` 를 더했다. `Render()` 는 `frame.WriteConstants()` 가 돌려준 주소를 `SetGraphicsRootConstantBufferView` 로 b0에 연결하고 `m_triangle.Draw()` 를 부른다. `Engine.cpp` 는 491줄에서 401줄이 됐다. 이전 커밋 `0089615` 에서 인덱스 버퍼를 넣었다.
+- 검증 결과 — Claude Code가 Debug 전체 빌드와 실행을 확인했다. stderr에 D3D12 메시지가 없고 종료 코드 0으로 끝난다. 화면을 리팩터링 전(`0089615`) 캡처와 비교했더니 클라이언트 영역 표본 226,490개(2픽셀 간격) 중 다른 픽셀이 0개였다. 사용자 눈으로 본 확인은 `미실행`.
+- 다음 할 일 — 구와 바닥, 카메라, 깊이 버퍼를 한 단계씩 넣는다. 이 작업을 한 번에 구현한 결과가 `git stash` 의 `stash@{0}`("WIP: sphere scene with depth buffer")에 있다. 정점 형식(위치, 노멀, UV), `Geometry.*`(직접 작성한 구와 사각형 생성), 궤도 카메라, `D32_FLOAT` 깊이 버퍼, `MeshVertexShader`/`NormalPixelShader` 가 들어 있다. 이 stash는 리팩터링 전 구조(`Engine::CreateMesh`, `SetMeshConstants`)를 기준으로 하므로 그대로 `pop` 하지 말고 단계별로 나눠 옮길 때 참고만 하고, 다 옮기면 버린다. 제안한 순서는 깊이 없는 3D 장면(정점 형식, 구와 바닥, 카메라, 노멀 색) → 깊이 버퍼다. 그다음 텍스처와 스카이 패스, 레이 PS 순서다. 레이 씬에서 크기가 다른 b1(512B)이 섞이면 "i번 칸" 대신 지금까지 쓴 바이트 수로 칸을 나눌지 사용자가 정한다. 학습에서 남은 약점은 배리어는 리소스를 받고 Clear와 OMSet은 디스크립터 핸들을 받는 이유, 디스크립터 칸을 덮어쓰거나 리소스를 해제할 때의 영향, 루트 시그니처다. 사용자 결정 필요: 전체 계획의 판단 1 기준 조정, 레이 씬의 포트폴리오 포함 여부, Part 2 자산과 레이 셰이더를 가져올지.
 
 ## 기준 자료
 
@@ -66,7 +67,7 @@ ImGui와 리사이즈는 이 단계의 범위가 아니다. 정답 화면과 비
 
 ## 프로젝트 구조
 
-Windows C++17 프로젝트다. `src/main.cpp` 에 진입점이, `src/Engine.*` 에 렌더러(`Engine`)와 프레임 자원이, `src/Mesh.h` 에 정점과 메시 데이터가, `src/Window.*` 에 Win32 창 생성이, `src/Util.*` 에 `Check`, 셰이더 로더, 디버그 레이어 콜백이 있다. `Engine::Initialize()` 에서 초기화 순서를, `Engine::Render()` 에서 한 프레임의 GPU 작업을 확인할 수 있다. `shaders/` 에는 정점·픽셀 셰이더와 공용 선언 파일인 `Common.hlsli` 가 있다. 별도 테스트나 에셋 디렉터리는 없다. `x64/` 와 `Computer.6f1c3a52/` 의 빌드 산출물은 버전 관리에서 제외한다.
+Windows C++17 프로젝트다. `src/main.cpp` 에 진입점이, `src/Engine.*` 에 렌더러(`Engine`)가, `src/FrameResource.*` 에 프레임별 할당자와 상수 칸이, `src/Mesh.*` 에 정점, 메시 데이터, 메시 생성과 그리기가, `src/ConstantBuffers.h` 에 셰이더 cbuffer와 같은 배치의 구조체가, `src/Window.*` 에 Win32 창 생성이, `src/Util.*` 에 `Check`, 업로드 버퍼 헬퍼, 셰이더 로더, 디버그 레이어 콜백이 있다. `Engine::Initialize()` 에서 초기화 순서를, `Engine::Render()` 에서 한 프레임의 GPU 작업을 확인할 수 있다. `shaders/` 에는 정점·픽셀 셰이더와 공용 선언 파일인 `Common.hlsli` 가 있다. 별도 테스트나 에셋 디렉터리는 없다. `x64/` 와 `Computer.6f1c3a52/` 의 빌드 산출물은 버전 관리에서 제외한다.
 
 ## 빌드와 실행
 
@@ -92,9 +93,9 @@ MSBuild는 FXC로 HLSL을 Shader Model 5.1로 컴파일하고 `.cso` 를 실행 
 ## 설계 메모
 
 - **파일 구조:** Hello Triangle 코드는 버리지 않고 레이 씬과 이후 기능의 출발점으로 쓴다. 설계 판단이 없는 창 생성과 유틸리티는 `src/Window.*`, `src/Util.*` 로 분리했다. 학습용이라 성능보다 가독성을 우선한다.
-- **엔진과 메시:** `Engine` 은 디바이스부터 펜스까지 GPU 객체를 모두 갖고, 메시를 만들고(`CreateMesh`) 그린다(`DrawMesh`). `Mesh` 는 함수 없이 GPU 버퍼와 뷰만 담는다. Part 3 강의 코드의 `struct Mesh` 와 같은 생각이다. 엔진은 `main()` 에서 하나만 만들고, 아무 데서나 꺼내 쓸 일이 없어서 싱글톤 패턴(`Engine::Get()`)은 쓰지 않는다. `Engine` 이 커지면 Part 3의 `Model` 처럼 메시를 묶어 그리는 클래스로 떼어 낼 수 있다.
+- **엔진과 메시:** 처음에는 `Mesh` 를 데이터만 담는 구조체로 두고 `Engine` 이 만들고 그렸다. `Engine.cpp` 가 길어져서 사용자가 메시 함수를 떼어 내기로 했다. 나누는 기준은 함수가 필요로 하는 객체와 다루는 데이터의 수명이다. `Mesh` 는 앱 수명의 정점, 인덱스 버퍼를 갖고 `Create(device, ...)`, `Draw(commandList)` 로 디바이스와 리스트를 인자로 받는다(Part 3의 `Model::Render(context)` 와 같은 모양). 드로우마다 바뀌는 상수는 같은 메시를 여러 번 그릴 때 값이 달라서 메시가 아니라 `FrameResource` 가 칸에 쓴다. 칸에 쓰기(메모리)는 `FrameResource` 가, 그 주소를 몇 번 루트 파라미터에 연결할지(바인딩)는 루트 시그니처를 가진 `Engine` 이 한다. 엔진은 `main()` 에서 하나만 만들고 아무 데서나 꺼내 쓸 일이 없어서 싱글톤 패턴은 쓰지 않는다. 루트 시그니처와 PSO 생성은 스카이 PSO를 넣을 때, 텍스처 로딩은 텍스처 단계에서 따로 떼어 낸다. 레이 씬이 다 들어온 뒤 `Render()` 가 다시 길어지면 엔진(디바이스, 큐, 프레임)과 장면(메시, PSO, 드로우 순서)을 나누는 것을 검토한다.
 - **프레임 동기화:** 진행 중인 프레임은 최대 `kFrameCount`(2)개다. 프레임마다 `FrameResource` 에 커맨드 할당자와 그 프레임을 제출할 때 `Signal` 한 펜스 값을 둔다. `Render()` 는 시작할 때 자기 칸의 펜스 값까지만 기다린 뒤 할당자를 `Reset()` 한다. 큐, 커맨드 리스트, 펜스, 이벤트, 카운터(`m_fenceCounter`)는 하나다. 리스트는 제출 직후 다른 할당자로 `Reset()` 할 수 있어서 하나로 충분하다. 백버퍼 수(`kBackBufferCount`)는 스왑체인이 정하는 값이라 `kFrameCount` 와 따로 둔다. 프레임 중에 갱신하는 GPU 메모리(레이 씬의 상수 링 버퍼 등)도 프레임별로 나눠야 한다.
-- **드로우별 상수:** GPU는 커맨드 리스트를 나중에 실행하면서 기록된 주소를 그때 읽는다. 그래서 드로우마다 다른 칸을 써야 한다. DX11에서는 `Map(WRITE_DISCARD)` 때 드라이버가 새 메모리를 주던 일이다. 칸은 `FrameResource` 의 업로드 버퍼(256B × `kMaxDrawsPerFrame`)에 있고, i번째 드로우가 i번 칸을 쓴다. 상수 버퍼 주소는 256바이트 배수여야 한다. 프레임마다 버퍼를 따로 두는 이유는 값이 바뀌어서가 아니라, 다음 프레임을 기록하는 동안 GPU가 이전 프레임의 칸을 아직 읽고 있을 수 있어서다. 프레임 시작의 펜스 대기를 지나면 그 프레임의 칸을 다시 쓴다.
+- **드로우별 상수:** GPU는 커맨드 리스트를 나중에 실행하면서 기록된 주소를 그때 읽는다. 그래서 드로우마다 다른 칸을 써야 한다. DX11에서는 `Map(WRITE_DISCARD)` 때 드라이버가 새 메모리를 주던 일이다. 칸은 `FrameResource` 의 업로드 버퍼(256B × `kMaxDrawsPerFrame`)에 있고, i번째 드로우가 `FrameResource::WriteConstants(i, ...)` 로 i번 칸을 쓴다. 상수 버퍼 주소는 256바이트 배수여야 한다. 프레임마다 버퍼를 따로 두는 이유는 값이 바뀌어서가 아니라, 다음 프레임을 기록하는 동안 GPU가 이전 프레임의 칸을 아직 읽고 있을 수 있어서다. 프레임 시작의 펜스 대기를 지나면 그 프레임의 칸을 다시 쓴다.
 - **루트 시그니처:** 셰이더가 받는 인자 목록이다. DX11에서 단계별 슬롯 판을 드라이버가 맞춰 주던 일을 직접 선언한다. 파라미터 0은 VS의 b0이고 루트 CBV다. 드로우마다 바뀌는 값이라, 디스크립터 테이블처럼 힙의 view를 드로우마다 만들고 그 칸의 수명까지 관리하는 대신 주소만 넘긴다. 텍스처(t1~t3)는 view가 필요하므로 레이 씬에서 디스크립터 테이블로 넣는다.
 - **창과 스왑체인:** 창 크기는 고정이고 리사이즈 경로가 없다. 그래서 Alt+Enter도 막아 두었다.
 - **헬퍼 헤더:** `d3dx12.h`는 Windows SDK에 없어서 쓰지 않고, D3D12 구조체를 직접 채운다. 계획에 있는 `directx-headers`는 필요해질 때 추가한다.

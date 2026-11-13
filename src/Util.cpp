@@ -1,5 +1,6 @@
 #include "Util.h"
 
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -16,6 +17,36 @@ void Check(HRESULT hr, const char *action) {
     message << action << " failed (HRESULT 0x" << std::hex
             << static_cast<unsigned long>(hr) << ")";
     throw std::runtime_error(message.str());
+}
+
+Microsoft::WRL::ComPtr<ID3D12Resource> CreateUploadBuffer(ID3D12Device *device,
+                                                          UINT64 size) {
+    D3D12_HEAP_PROPERTIES heap = {};
+    heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_RESOURCE_DESC desc = {};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    desc.Width = size;
+    desc.Height = 1;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
+    Check(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                          D3D12_RESOURCE_STATE_GENERIC_READ,
+                                          nullptr, IID_PPV_ARGS(&buffer)),
+          "CreateCommittedResource");
+    return buffer;
+}
+
+void CopyToBuffer(ID3D12Resource *buffer, const void *data, size_t size) {
+    void *mapped = nullptr;
+    const D3D12_RANGE noRead = {0, 0};
+    Check(buffer->Map(0, &noRead, &mapped), "Map");
+    std::memcpy(mapped, data, size);
+    buffer->Unmap(0, nullptr);
 }
 
 // 셰이더는 빌드 때 컴파일되어 실행 파일 옆에 복사되므로, 작업 디렉터리와
