@@ -20,7 +20,8 @@ Part 2(DX11)에서 배운 내용을 DX12로 옮기며 학습하고, 결과를 �
 - **완료:** 드로우별 상수 b0. 사용자가 "프레임마다 256B × 3 칸, i번째 드로우는 i번 칸, 펜스 대기 뒤 재사용"과 "b0는 루트 CBV"를 정했다. 같은 삼각형을 b0만 바꿔 세 번 그린다.
 - **완료:** 인덱스 버퍼. `Mesh` 에 인덱스 버퍼를 더하고, 같은 삼각형 3개를 `DrawIndexedInstanced` 로 그린다. 화면은 이전 단계와 같다.
 - **완료:** 메시와 프레임 자원 분리(리팩터링). 사용자 요청으로 `Engine.cpp` 의 메시 함수를 떼어 냈다. `Mesh` 가 자기 버퍼를 만들고 그리며(`Mesh::Create`, `Mesh::Draw`), 드로우별 상수 칸 쓰기는 메시가 아니라 `FrameResource::WriteConstants` 가 맡는다. 화면은 이전 단계와 같다.
-- **진행 중:** 없음. 다음은 구와 바닥, 카메라, 깊이 버퍼다. 사용자 요청으로 한 단계씩 나눠 진행한다.
+- **완료:** 깊이 없는 3D 장면. Part 2 배치대로 구 6개와 바닥을 궤도 카메라로 그리고 노멀을 색으로 출력한다. 깊이 버퍼가 없어서 마지막에 그린 바닥이 구의 아랫부분을 덮는다. 다음 단계와 비교하려고 일부러 남긴 상태다.
+- **진행 중:** 없음. 다음은 깊이 버퍼다. 사용자가 "GPU만 읽고 쓰고 프레임은 큐에서 차례로 실행되므로 엔진에 하나"로 이미 정했다.
 - **다음 목표:** Part 2의 레이 씬을 DX12로 렌더링한다. 필요 범위는 `1차 목표: 레이 씬` 절에 있다.
 
 ### 작업 인수인계
@@ -29,9 +30,9 @@ Part 2(DX11)에서 배운 내용을 DX12로 옮기며 학습하고, 결과를 �
 
 **최신 기록**
 
-- 변경한 파일 — 동작은 그대로 두고 구조만 바꿨다. `src/Mesh.h`, 새 `src/Mesh.cpp`: `Mesh` 를 private 멤버를 가진 클래스로 바꾸고 `Mesh::Create(device, MeshData)`, `Mesh::Draw(commandList)` 를 둔다(디바이스와 리스트는 인자로 받는다). 새 `src/FrameResource.*`: `Engine.h` 에서 옮긴 `FrameResource` 에 `Create(device, slotCount)`(할당자, 상수 업로드 버퍼, 계속 Map)와 `WriteConstants(slot, data, size)`(칸에 쓰고 GPU 주소 반환)를 두고, `kConstantSlotSize` 도 여기로 옮겼다. 새 `src/ConstantBuffers.h`: `MeshConstants` 를 `Mesh.h` 에서 옮겼다. `src/Util.*`: `CreateUploadBuffer(device, size)`, `CopyToBuffer()` 를 옮겼다. `src/Engine.*`: `CreateMesh`, `SetMeshConstants`, `DrawMesh`, `CreateUploadBuffer`, `CreateConstantBuffers` 를 지우고 `CreateFrameResources()` 를 더했다. `Render()` 는 `frame.WriteConstants()` 가 돌려준 주소를 `SetGraphicsRootConstantBufferView` 로 b0에 연결하고 `m_triangle.Draw()` 를 부른다. `Engine.cpp` 는 491줄에서 401줄이 됐다. 이전 커밋 `0089615` 에서 인덱스 버퍼를 넣었다.
-- 검증 결과 — Claude Code가 Debug 전체 빌드와 실행을 확인했다. stderr에 D3D12 메시지가 없고 종료 코드 0으로 끝난다. 화면을 리팩터링 전(`0089615`) 캡처와 비교했더니 클라이언트 영역 표본 226,490개(2픽셀 간격) 중 다른 픽셀이 0개였다. 사용자 눈으로 본 확인은 `미실행`.
-- 다음 할 일 — 구와 바닥, 카메라, 깊이 버퍼를 한 단계씩 넣는다. 이 작업을 한 번에 구현한 결과가 `git stash` 의 `stash@{0}`("WIP: sphere scene with depth buffer")에 있다. 정점 형식(위치, 노멀, UV), `Geometry.*`(직접 작성한 구와 사각형 생성), 궤도 카메라, `D32_FLOAT` 깊이 버퍼, `MeshVertexShader`/`NormalPixelShader` 가 들어 있다. 이 stash는 리팩터링 전 구조(`Engine::CreateMesh`, `SetMeshConstants`)를 기준으로 하므로 그대로 `pop` 하지 말고 단계별로 나눠 옮길 때 참고만 하고, 다 옮기면 버린다. 제안한 순서는 깊이 없는 3D 장면(정점 형식, 구와 바닥, 카메라, 노멀 색) → 깊이 버퍼다. 그다음 텍스처와 스카이 패스, 레이 PS 순서다. 레이 씬에서 크기가 다른 b1(512B)이 섞이면 "i번 칸" 대신 지금까지 쓴 바이트 수로 칸을 나눌지 사용자가 정한다. 학습에서 남은 약점은 배리어는 리소스를 받고 Clear와 OMSet은 디스크립터 핸들을 받는 이유, 디스크립터 칸을 덮어쓰거나 리소스를 해제할 때의 영향, 루트 시그니처다. 사용자 결정 필요: 전체 계획의 판단 1 기준 조정, 레이 씬의 포트폴리오 포함 여부, Part 2 자산과 레이 셰이더를 가져올지.
+- 변경한 파일 — `src/Mesh.h` 의 `Vertex` 를 위치, 노멀, UV(`XMFLOAT3/3/2`)로 바꿨다. 새 `src/Geometry.*` 에 `MakeSphere(radius, slices, stacks)`, `MakeSquare()` 를 직접 작성했다(강의 코드 복사 아님, 바깥에서 볼 때 시계 방향 감기). 셰이더를 `shaders/MeshVertexShader.hlsl`(월드 위치와 역전치 행렬로 변환한 노멀 출력), `shaders/NormalPixelShader.hlsl`(노멀을 0~1 색으로)로 바꾸고 `Common.hlsli` 입출력을 맞췄으며 `Triangle*` 셰이더는 지웠다. `src/Engine.*`: 입력 레이아웃을 POSITION/NORMAL/TEXCOORD로, `kMaxDrawsPerFrame` 을 7로 바꿨다. `m_triangle` 대신 `m_sphere`(반지름 1, 96 × 64), `m_ground` 를 만들고, `Render()` 가 Part 2 `ExampleApp::Update` 와 같은 궤도 카메라(시작 후 경과 시간 기준)로 구 6개와 바닥을 그린다. 상수 쓰기, b0 연결, 그리기를 묶은 `Engine::DrawMesh(frame, drawIndex, mesh, constants)` 를 더했다. 창 제목은 `ComputerGraphicsDX12` 다. 이전 커밋 `bcfab09` 에서 메시와 프레임 자원을 분리했다.
+- 검증 결과 — Claude Code가 Debug 전체 빌드와 실행을 확인했다. 구 6개와 바닥이 노멀 색으로 보이고 카메라가 돈다. 바닥은 위를 향해 연두색(0.5, 1, 0.5)이다. 깊이 버퍼가 없어서 마지막에 그리는 바닥이 구의 아랫부분을 덮는다(예상한 결과). stderr에 D3D12 메시지가 없고 종료 코드 0으로 끝난다. 사용자 눈으로 본 확인은 `미실행`.
+- 다음 할 일 — 깊이 버퍼(DSV 힙, `D32_FLOAT` 텍스처, `DEPTH_WRITE` 상태 유지, PSO 깊이 상태, 프레임마다 클리어)를 넣어 가림을 바로잡는다. `git stash` 의 `stash@{0}`("WIP: sphere scene with depth buffer")에 깊이 버퍼 구현이 있다. 리팩터링 전 구조라서 `pop` 하지 말고 참고만 하며, 깊이 단계를 옮긴 뒤 버린다. 그다음 텍스처와 스카이 패스, 레이 PS 순서다. 레이 씬에서 크기가 다른 b1(512B)이 섞이면 "i번 칸" 대신 지금까지 쓴 바이트 수로 칸을 나눌지 사용자가 정한다. 학습에서 남은 약점은 배리어는 리소스를 받고 Clear와 OMSet은 디스크립터 핸들을 받는 이유, 디스크립터 칸을 덮어쓰거나 리소스를 해제할 때의 영향, 루트 시그니처다. 사용자 결정 필요: 전체 계획의 판단 1 기준 조정, 레이 씬의 포트폴리오 포함 여부, Part 2 자산과 레이 셰이더를 가져올지.
 
 ## 기준 자료
 
@@ -67,7 +68,7 @@ ImGui와 리사이즈는 이 단계의 범위가 아니다. 정답 화면과 비
 
 ## 프로젝트 구조
 
-Windows C++17 프로젝트다. `src/main.cpp` 에 진입점이, `src/Engine.*` 에 렌더러(`Engine`)가, `src/FrameResource.*` 에 프레임별 할당자와 상수 칸이, `src/Mesh.*` 에 정점, 메시 데이터, 메시 생성과 그리기가, `src/ConstantBuffers.h` 에 셰이더 cbuffer와 같은 배치의 구조체가, `src/Window.*` 에 Win32 창 생성이, `src/Util.*` 에 `Check`, 업로드 버퍼 헬퍼, 셰이더 로더, 디버그 레이어 콜백이 있다. `Engine::Initialize()` 에서 초기화 순서를, `Engine::Render()` 에서 한 프레임의 GPU 작업을 확인할 수 있다. `shaders/` 에는 정점·픽셀 셰이더와 공용 선언 파일인 `Common.hlsli` 가 있다. 별도 테스트나 에셋 디렉터리는 없다. `x64/` 와 `Computer.6f1c3a52/` 의 빌드 산출물은 버전 관리에서 제외한다.
+Windows C++17 프로젝트다. `src/main.cpp` 에 진입점이, `src/Engine.*` 에 렌더러(`Engine`)가, `src/FrameResource.*` 에 프레임별 할당자와 상수 칸이, `src/Mesh.*` 에 정점, 메시 데이터, 메시 생성과 그리기가, `src/Geometry.*` 에 구와 사각형 생성이, `src/ConstantBuffers.h` 에 셰이더 cbuffer와 같은 배치의 구조체가, `src/Window.*` 에 Win32 창 생성이, `src/Util.*` 에 `Check`, 업로드 버퍼 헬퍼, 셰이더 로더, 디버그 레이어 콜백이 있다. `Engine::Initialize()` 에서 초기화 순서를, `Engine::Render()` 에서 한 프레임의 GPU 작업을 확인할 수 있다. `shaders/` 에는 정점·픽셀 셰이더와 공용 선언 파일인 `Common.hlsli` 가 있다. 별도 테스트나 에셋 디렉터리는 없다. `x64/` 와 `Computer.6f1c3a52/` 의 빌드 산출물은 버전 관리에서 제외한다.
 
 ## 빌드와 실행
 
@@ -87,7 +88,7 @@ MSBuild는 FXC로 HLSL을 Shader Model 5.1로 컴파일하고 `.cso` 를 실행 
 - C++은 `.clang-format` 을 따른다. 들여쓰기는 공백 4칸, 줄 길이는 80자다. `clang-format -i --style=file src/*.cpp src/*.h` 로 정리한다. PATH에 없으면 `C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin\clang-format.exe` 를 사용한다.
 - 타입과 함수는 `PascalCase`, 지역 변수는 `camelCase` 를 쓴다. 멤버에는 `m_`, 상수에는 `k` 접두사를 붙인다. 초기화 순서를 유지한다.
 - C++과 HLSL 주석은 한국어로 쓰고, 이 문서처럼 `~한다` 체로 쓴다. API, 타입, 함수 이름은 원문 그대로 둔다. 소스 파일은 BOM 없는 UTF-8이고, MSVC가 시스템 코드 페이지와 상관없이 UTF-8로 읽도록 프로젝트에 `/utf-8` 을 지정했다.
-- 자동 테스트와 커버리지 기준은 없다. Debug 빌드를 실행해 색상 삼각형이 표시되고 창이 정상적으로 닫히는지 확인한다. 디버그 레이어를 켠 상태에서 stderr에 `[D3D12 WARNING]` 과 `[D3D12 ERROR]` 가 없는지 확인한다.
+- 자동 테스트와 커버리지 기준은 없다. Debug 빌드를 실행해 현재 단계의 기대 화면(`현재 상태` 의 마지막 완료 항목)이 표시되고 창이 정상적으로 닫히는지 확인한다. 디버그 레이어를 켠 상태에서 stderr에 `[D3D12 WARNING]` 과 `[D3D12 ERROR]` 가 없는지 확인한다.
 - 커밋 제목은 짧은 명령형으로 쓴다. PR에는 변경 내용, 빌드와 실행 확인 결과, 관련 이슈가 있으면 링크를 적는다. 화면에 보이는 변경에는 스크린샷을 붙인다.
 
 ## 설계 메모

@@ -7,12 +7,13 @@
 #include <d3d12sdklayers.h>
 
 #include <climits>
+#include <cmath>
 #include <cstddef>
 #include <exception>
 #include <iostream>
 #include <stdexcept>
 
-#include "ConstantBuffers.h"
+#include "Geometry.h"
 #include "Util.h"
 #include "Window.h"
 
@@ -44,6 +45,21 @@ MeshConstants MakeMeshConstants(FXMMATRIX model, CXMMATRIX view,
 static_assert(sizeof(MeshConstants) <= FrameResource::kConstantSlotSize,
               "MeshConstants must fit in one constant buffer slot.");
 
+// Part 2 레이 씬의 구 배치다. 색, 반사, 굴절 값은 레이 PS를 넣을 때 더한다.
+struct SphereDesc {
+    XMFLOAT3 center;
+    float radius;
+};
+
+const SphereDesc kSpheres[] = {
+    {{0.0f, 0.8f, 2.0f}, 0.8f},  {{1.0f, 1.1f, 6.0f}, 1.1f},
+    {{-2.0f, 0.5f, 3.0f}, 0.5f}, {{1.5f, 0.8f, 3.0f}, 0.5f},
+    {{-0.8f, 1.0f, 4.0f}, 1.0f}, {{-2.0f, 1.0f, 7.0f}, 1.0f},
+};
+
+constexpr float kGroundHalfExtent = 5.0f;
+const XMFLOAT3 kGroundCenter = {0.0f, 0.0f, 5.0f};
+
 } // namespace
 
 Engine::~Engine() {
@@ -59,7 +75,7 @@ Engine::~Engine() {
 }
 
 void Engine::Initialize() {
-    m_window = CreateAppWindow(kWidth, kHeight, L"Hello DX12");
+    m_window = CreateAppWindow(kWidth, kHeight, L"ComputerGraphicsDX12");
     CreateDevice();
     CreateFrameResources();
     CreateCommandObjects();
@@ -67,18 +83,11 @@ void Engine::Initialize() {
     CreateRenderTargets();
     CreatePipeline();
 
-    // Direct3D는 기본적으로 시계 방향 삼각형을 앞면으로 본다. 인덱스도 그
-    // 순서로 정점을 가리킨다.
-    MeshData triangle;
-    triangle.vertices = {
-        {{0.0f, 0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}},
-        {{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}},
-        {{-0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}},
-    };
-    triangle.indices = {0, 1, 2};
-    m_triangle = Mesh::Create(m_device.Get(), triangle);
+    m_sphere = Mesh::Create(m_device.Get(), MakeSphere(1.0f, 96, 64));
+    m_ground = Mesh::Create(m_device.Get(), MakeSquare());
 
     CreateFence();
+    m_startTime = std::chrono::steady_clock::now();
 }
 
 int Engine::Run() {
@@ -248,15 +257,17 @@ void Engine::CreatePipeline() {
           "CreateRootSignature");
 
     const std::vector<char> vertexShader =
-        LoadCompiledShader("TriangleVertexShader.cso");
+        LoadCompiledShader("MeshVertexShader.cso");
     const std::vector<char> pixelShader =
-        LoadCompiledShader("TrianglePixelShader.cso");
+        LoadCompiledShader("NormalPixelShader.cso");
 
     const D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,
          offsetof(Vertex, position), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
          0},
-        {"COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Vertex, color),
+        {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Vertex, normal),
+         D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(Vertex, texcoord),
          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     };
 
@@ -347,23 +358,40 @@ void Engine::Render() {
     m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    // 같은 삼각형을 b0만 바꿔 세 번 그린다. 드로우마다 상수 칸이 달라야 GPU가
-    // 실행할 때 각자 자기 위치를 읽는다.
-    const float offsetsX[kMaxDrawsPerFrame] = {-0.6f, 0.0f, 0.6f};
-    for (UINT i = 0; i < kMaxDrawsPerFrame; ++i) {
-        const XMMATRIX model = XMMatrixScaling(0.5f, 0.5f, 1.0f) *
-                               XMMatrixTranslation(offsetsX[i], 0.0f, 0.0f);
-        const MeshConstants constants =
-            MakeMeshConstants(model, XMMatrixIdentity(), XMMatrixIdentity());
+    // 카메라는 Part 2 레이 씬처럼 바닥 중심 둘레를 돈다.
+    const float time = std::chrono::duration<float>(
+                           std::chrono::steady_clock::now() - m_startTime)
+                           .count();
+    const float angle = 0.6f * time;
+    const XMVECTOR eye = XMVectorSet(6.0f * std::sin(angle), 2.0f,
+                                     5.0f - 6.0f * std::cos(angle), 1.0f);
+    const XMMATRIX view =
+        XMMatrixLookAtLH(eye, XMVectorSet(0.0f, 0.8f, 5.0f, 1.0f),
+                         XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
+    const XMMATRIX projection =
+        XMMatrixPerspectiveFovLH(2.0f * std::atan(0.5f / 0.8f),
+                                 float(kWidth) / float(kHeight), 0.01f, 100.0f);
 
-        // 칸에 쓰는 일은 프레임 자원이, 그 주소를 b0에 연결하는 일은 루트
-        // 시그니처를 가진 엔진이 한다.
-        const D3D12_GPU_VIRTUAL_ADDRESS address =
-            frame.WriteConstants(i, &constants, sizeof(constants));
-        m_commandList->SetGraphicsRootConstantBufferView(kRootMeshConstants,
-                                                         address);
-        m_triangle.Draw(m_commandList.Get());
+    // 구 6개를 먼저, 바닥을 마지막에 그린다. 깊이 버퍼가 아직 없어서 나중에
+    // 그린 것이 앞뒤와 상관없이 위에 덮인다.
+    UINT drawIndex = 0;
+    for (const SphereDesc &sphere : kSpheres) {
+        const XMMATRIX model =
+            XMMatrixScaling(sphere.radius, sphere.radius, sphere.radius) *
+            XMMatrixTranslation(sphere.center.x, sphere.center.y,
+                                sphere.center.z);
+        DrawMesh(frame, drawIndex++, m_sphere,
+                 MakeMeshConstants(model, view, projection));
     }
+
+    // 정사각형은 -z를 향하므로 x축으로 90도 돌려 위를 향하게 눕힌다.
+    const XMMATRIX groundModel =
+        XMMatrixScaling(kGroundHalfExtent, kGroundHalfExtent,
+                        kGroundHalfExtent) *
+        XMMatrixRotationX(XM_PIDIV2) *
+        XMMatrixTranslation(kGroundCenter.x, kGroundCenter.y, kGroundCenter.z);
+    DrawMesh(frame, drawIndex++, m_ground,
+             MakeMeshConstants(groundModel, view, projection));
 
     Transition(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET,
                D3D12_RESOURCE_STATE_PRESENT);
@@ -378,6 +406,17 @@ void Engine::Render() {
     frame.fenceValue = Signal();
     m_backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
     m_frameIndex = (m_frameIndex + 1) % kFrameCount;
+}
+
+void Engine::DrawMesh(FrameResource &frame, UINT drawIndex, const Mesh &mesh,
+                      const MeshConstants &constants) {
+    // 칸에 쓰는 일은 프레임 자원이, 그 주소를 b0에 연결하는 일은 루트
+    // 시그니처를 가진 엔진이, 그리기는 메시가 한다.
+    const D3D12_GPU_VIRTUAL_ADDRESS address =
+        frame.WriteConstants(drawIndex, &constants, sizeof(constants));
+    m_commandList->SetGraphicsRootConstantBufferView(kRootMeshConstants,
+                                                     address);
+    mesh.Draw(m_commandList.Get());
 }
 
 // 지금까지 제출한 모든 작업 뒤에 펜스 쓰기를 큐에 넣고, GPU가 거기에 도달했을

@@ -1,16 +1,18 @@
 #pragma once
 
+#include <DirectXMath.h>
 #include <d3d12.h>
 #include <wrl/client.h>
 
 #include <cstdint>
 #include <vector>
 
-// 정점 셰이더 입력과 같은 배치다. 입력 레이아웃은 Engine::CreatePipeline()에
-// 있다.
+// 정점 셰이더 입력(VertexShaderInput)과 같은 배치다. 입력 레이아웃은
+// Engine::CreatePipeline()에 있다.
 struct Vertex {
-    float position[3];
-    float color[3];
+    DirectX::XMFLOAT3 position;
+    DirectX::XMFLOAT3 normal;
+    DirectX::XMFLOAT2 texcoord;
 };
 
 // CPU에서 준비한 메시 데이터다. Mesh::Create()가 GPU 버퍼로 올린다.

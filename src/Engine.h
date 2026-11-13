@@ -6,6 +6,9 @@
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 
+#include <chrono>
+
+#include "ConstantBuffers.h"
 #include "FrameResource.h"
 #include "Mesh.h"
 
@@ -27,9 +30,9 @@ class Engine {
     // CPU가 GPU를 기다리지 않고 앞서 제출할 수 있는 프레임 수다. 스왑체인이
     // 정하는 kBackBufferCount와는 별개다.
     static constexpr UINT kFrameCount = 2;
-    // 한 프레임에 그릴 수 있는 드로우 수다. 드로우마다 상수 버퍼 칸을 하나씩
-    // 쓴다.
-    static constexpr UINT kMaxDrawsPerFrame = 3;
+    // 한 프레임에 그릴 수 있는 드로우 수다(구 6개와 바닥). 드로우마다 상수
+    // 버퍼 칸을 하나씩 쓴다.
+    static constexpr UINT kMaxDrawsPerFrame = 7;
     // 루트 시그니처의 파라미터 번호다.
     static constexpr UINT kRootMeshConstants = 0;
 
@@ -44,6 +47,8 @@ class Engine {
     void Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES before,
                     D3D12_RESOURCE_STATES after);
     void Render();
+    void DrawMesh(FrameResource &frame, UINT drawIndex, const Mesh &mesh,
+                  const MeshConstants &constants);
 
     UINT64 Signal();
     void WaitForFenceValue(UINT64 value);
@@ -67,7 +72,11 @@ class Engine {
     ComPtr<ID3D12RootSignature> m_rootSignature;
     ComPtr<ID3D12PipelineState> m_pipelineState;
 
-    Mesh m_triangle;
+    // 구는 반지름 1인 메시 하나를 드로우마다 모델 행렬로 옮겨 그린다.
+    Mesh m_sphere;
+    Mesh m_ground;
+    // 카메라는 이 시각부터 흐른 시간에 따라 돈다.
+    std::chrono::steady_clock::time_point m_startTime;
 
     ComPtr<ID3D12Fence> m_fence;
     // 마지막으로 Signal()에 넘긴 값이다. 각 프레임은 자기 값을

@@ -83,6 +83,7 @@
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\Engine.cpp" />
     <ClCompile Include="src\FrameResource.cpp" />
+    <ClCompile Include="src\Geometry.cpp" />
     <ClCompile Include="src\Mesh.cpp" />
     <ClCompile Include="src\Util.cpp" />
     <ClCompile Include="src\Window.cpp" />
@@ -91,6 +92,7 @@
     <ClInclude Include="src\ConstantBuffers.h" />
     <ClInclude Include="src\Engine.h" />
     <ClInclude Include="src\FrameResource.h" />
+    <ClInclude Include="src\Geometry.h" />
     <ClInclude Include="src\Mesh.h" />
     <ClInclude Include="src\Util.h" />
     <ClInclude Include="src\Window.h" />
@@ -100,10 +102,10 @@
     <None Include="shaders\Common.hlsli" />
   </ItemGroup>
   <ItemGroup>
-    <FxCompile Include="shaders\TriangleVertexShader.hlsl">
+    <FxCompile Include="shaders\MeshVertexShader.hlsl">
       <ShaderType>Vertex</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\TrianglePixelShader.hlsl">
+    <FxCompile Include="shaders\NormalPixelShader.hlsl">
       <ShaderType>Pixel</ShaderType>
     </FxCompile>
   </ItemGroup>
