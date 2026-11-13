@@ -7,6 +7,7 @@
 #include <wrl/client.h>
 
 #include <cstddef>
+#include <filesystem>
 #include <vector>
 
 // hr이 실패 코드면 동작 이름을 담은 std::runtime_error를 던진다.
@@ -19,6 +20,10 @@ Microsoft::WRL::ComPtr<ID3D12Resource> CreateUploadBuffer(ID3D12Device *device,
 
 // 업로드 버퍼를 잠깐 Map해 data를 복사한다.
 void CopyToBuffer(ID3D12Resource *buffer, const void *data, size_t size);
+
+// 실행 파일이 있는 폴더다. 빌드가 셰이더와 자산을 이 폴더 아래로 복사하므로
+// 작업 디렉터리와 상관없이 찾을 수 있다.
+std::filesystem::path ExecutableDirectory();
 
 // 빌드가 실행 파일 옆에 둔 .cso 파일을 읽는다.
 std::vector<char> LoadCompiledShader(const char *fileName);

@@ -11,6 +11,7 @@
 #include "ConstantBuffers.h"
 #include "FrameResource.h"
 #include "Mesh.h"
+#include "Texture.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -44,6 +45,7 @@ class Engine {
     void CreateDepthBuffer();
     void CreatePipeline();
     void CreateFence();
+    void LoadTextures();
 
     void Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES before,
                     D3D12_RESOURCE_STATES after);
@@ -81,6 +83,12 @@ class Engine {
     // 구는 반지름 1인 메시 하나를 드로우마다 모델 행렬로 옮겨 그린다.
     Mesh m_sphere;
     Mesh m_ground;
+
+    // 레이 씬의 t2(하늘과 반사), t1(확산 조명), t3(바닥)이다. 셰이더에 묶는
+    // 일은 다음 단계에서 한다.
+    Texture m_environmentMap;
+    Texture m_irradianceMap;
+    Texture m_groundTexture;
     // 카메라는 이 시각부터 흐른 시간에 따라 돈다.
     std::chrono::steady_clock::time_point m_startTime;
 

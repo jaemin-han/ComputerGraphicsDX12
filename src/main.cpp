@@ -6,12 +6,22 @@
 #include "Engine.h"
 
 int main() {
+    // DirectXTex가 PNG, JPG를 읽을 때 쓰는 WIC는 COM이 초기화돼 있어야 한다.
+    if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) {
+        std::cerr << "Error: CoInitializeEx failed" << std::endl;
+        return -1;
+    }
+
+    int exitCode = -1;
     try {
         Engine engine;
         engine.Initialize();
-        return engine.Run();
+        exitCode = engine.Run();
     } catch (const std::exception &error) {
         std::cerr << "Error: " << error.what() << std::endl;
-        return -1;
     }
+
+    // 엔진이 COM 객체를 모두 놓은 뒤에 정리한다.
+    CoUninitialize();
+    return exitCode;
 }

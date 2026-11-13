@@ -49,13 +49,14 @@ void CopyToBuffer(ID3D12Resource *buffer, const void *data, size_t size) {
     buffer->Unmap(0, nullptr);
 }
 
-// 셰이더는 빌드 때 컴파일되어 실행 파일 옆에 복사되므로, 작업 디렉터리와
-// 상관없이 찾을 수 있다.
-std::vector<char> LoadCompiledShader(const char *fileName) {
+std::filesystem::path ExecutableDirectory() {
     wchar_t executablePath[MAX_PATH];
     GetModuleFileNameW(nullptr, executablePath, MAX_PATH);
-    const std::filesystem::path path =
-        std::filesystem::path(executablePath).parent_path() / fileName;
+    return std::filesystem::path(executablePath).parent_path();
+}
+
+std::vector<char> LoadCompiledShader(const char *fileName) {
+    const std::filesystem::path path = ExecutableDirectory() / fileName;
 
     std::ifstream file(path, std::ios::binary);
     if (!file)

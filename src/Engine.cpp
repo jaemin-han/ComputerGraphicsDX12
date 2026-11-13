@@ -85,11 +85,13 @@ void Engine::Initialize() {
     CreateRenderTargets();
     CreateDepthBuffer();
     CreatePipeline();
+    // 텍스처 업로드가 GPU 완료를 기다려야 해서 펜스를 먼저 만든다.
+    CreateFence();
 
     m_sphere = Mesh::Create(m_device.Get(), MakeSphere(1.0f, 96, 64));
     m_ground = Mesh::Create(m_device.Get(), MakeSquare());
+    LoadTextures();
 
-    CreateFence();
     m_startTime = std::chrono::steady_clock::now();
 }
 
@@ -362,6 +364,37 @@ void Engine::CreateFence() {
     m_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     if (!m_fenceEvent)
         Check(HRESULT_FROM_WIN32(GetLastError()), "CreateEvent");
+}
+
+void Engine::LoadTextures() {
+    // 업로드는 초기화 때 한 번에 한다. 커맨드 리스트를 열어 텍스처마다 복사와
+    // 배리어를 기록하고, 제출한 뒤 GPU가 끝낼 때까지 기다린다.
+    FrameResource &frame = m_frames[m_frameIndex];
+    Check(frame.commandAllocator->Reset(), "ID3D12CommandAllocator::Reset");
+    Check(m_commandList->Reset(frame.commandAllocator.Get(), nullptr),
+          "ID3D12GraphicsCommandList::Reset");
+
+    // GPU가 복사를 끝낼 때까지 업로드 버퍼를 살려 두는 목록이다.
+    std::vector<ComPtr<ID3D12Resource>> uploadBuffers;
+    const std::filesystem::path folder =
+        ExecutableDirectory() / "assets" / "textures";
+    m_environmentMap =
+        Texture::Load(m_device.Get(), m_commandList.Get(),
+                      folder / "kloofendal_specular.dds", uploadBuffers);
+    m_irradianceMap =
+        Texture::Load(m_device.Get(), m_commandList.Get(),
+                      folder / "kloofendal_diffuse.dds", uploadBuffers);
+    m_groundTexture =
+        Texture::Load(m_device.Get(), m_commandList.Get(),
+                      folder / "cobblestone_albedo.png", uploadBuffers);
+
+    Check(m_commandList->Close(), "Close");
+    ID3D12CommandList *commandLists[] = {m_commandList.Get()};
+    m_commandQueue->ExecuteCommandLists(1, commandLists);
+
+    // ExecuteCommandLists가 돌아온 시점에 GPU는 아직 복사 중일 수 있다. 끝날
+    // 때까지 기다린 뒤에야 업로드 버퍼를 놓아도 된다.
+    WaitForGpu();
 }
 
 void Engine::Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES before,
