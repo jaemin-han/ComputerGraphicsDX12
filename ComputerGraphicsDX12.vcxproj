@@ -81,10 +81,13 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\Engine.cpp" />
     <ClCompile Include="src\Util.cpp" />
     <ClCompile Include="src\Window.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\Engine.h" />
+    <ClInclude Include="src\Mesh.h" />
     <ClInclude Include="src\Util.h" />
     <ClInclude Include="src\Window.h" />
   </ItemGroup>
