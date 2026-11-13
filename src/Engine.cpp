@@ -41,6 +41,14 @@ MeshConstants MakeMeshConstants(FXMMATRIX model, CXMMATRIX view,
     return constants;
 }
 
+void CopyToBuffer(ID3D12Resource *buffer, const void *data, size_t size) {
+    void *mapped = nullptr;
+    const D3D12_RANGE noRead = {0, 0};
+    Check(buffer->Map(0, &noRead, &mapped), "Map");
+    std::memcpy(mapped, data, size);
+    buffer->Unmap(0, nullptr);
+}
+
 } // namespace
 
 Engine::~Engine() {
@@ -64,12 +72,16 @@ void Engine::Initialize() {
     CreatePipeline();
     CreateConstantBuffers();
 
-    // Direct3D는 기본적으로 시계 방향 삼각형을 앞면으로 본다.
-    m_triangle = CreateMesh({
+    // Direct3D는 기본적으로 시계 방향 삼각형을 앞면으로 본다. 인덱스도 그
+    // 순서로 정점을 가리킨다.
+    MeshData triangle;
+    triangle.vertices = {
         {{0.0f, 0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}},
         {{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}},
         {{-0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}},
-    });
+    };
+    triangle.indices = {0, 1, 2};
+    m_triangle = CreateMesh(triangle);
 
     CreateFence();
 }
@@ -336,23 +348,33 @@ ComPtr<ID3D12Resource> Engine::CreateUploadBuffer(UINT64 size) {
     return buffer;
 }
 
-Mesh Engine::CreateMesh(const std::vector<Vertex> &vertices) {
-    const UINT size = static_cast<UINT>(sizeof(Vertex) * vertices.size());
+Mesh Engine::CreateMesh(const MeshData &data) {
+    const UINT vertexBytes =
+        static_cast<UINT>(sizeof(Vertex) * data.vertices.size());
+    const UINT indexBytes =
+        static_cast<UINT>(sizeof(uint32_t) * data.indices.size());
 
+    // 정점 버퍼와 인덱스 버퍼는 같은 방식으로 업로드 힙에 올린다. 차이는 뷰가
+    // 알려 주는 해석뿐이다.
     Mesh mesh;
-    mesh.vertexBuffer = CreateUploadBuffer(size);
+    mesh.vertexBuffer = CreateUploadBuffer(vertexBytes);
+    mesh.indexBuffer = CreateUploadBuffer(indexBytes);
+    CopyToBuffer(mesh.vertexBuffer.Get(), data.vertices.data(), vertexBytes);
+    CopyToBuffer(mesh.indexBuffer.Get(), data.indices.data(), indexBytes);
 
-    void *mapped = nullptr;
-    const D3D12_RANGE noRead = {0, 0};
-    Check(mesh.vertexBuffer->Map(0, &noRead, &mapped), "Map");
-    std::memcpy(mapped, vertices.data(), size);
-    mesh.vertexBuffer->Unmap(0, nullptr);
-
+    // 정점 버퍼는 정점 하나의 크기(Stride)로 잘라 읽는다.
     mesh.vertexBufferView.BufferLocation =
         mesh.vertexBuffer->GetGPUVirtualAddress();
     mesh.vertexBufferView.StrideInBytes = sizeof(Vertex);
-    mesh.vertexBufferView.SizeInBytes = size;
-    mesh.vertexCount = static_cast<UINT>(vertices.size());
+    mesh.vertexBufferView.SizeInBytes = vertexBytes;
+
+    // 인덱스 버퍼는 형식(32비트 정수)으로 읽는다.
+    mesh.indexBufferView.BufferLocation =
+        mesh.indexBuffer->GetGPUVirtualAddress();
+    mesh.indexBufferView.Format = DXGI_FORMAT_R32_UINT;
+    mesh.indexBufferView.SizeInBytes = indexBytes;
+
+    mesh.indexCount = static_cast<UINT>(data.indices.size());
     return mesh;
 }
 
@@ -372,7 +394,8 @@ void Engine::SetMeshConstants(FrameResource &frame, UINT drawIndex,
 
 void Engine::DrawMesh(const Mesh &mesh) {
     m_commandList->IASetVertexBuffers(0, 1, &mesh.vertexBufferView);
-    m_commandList->DrawInstanced(mesh.vertexCount, 1, 0, 0);
+    m_commandList->IASetIndexBuffer(&mesh.indexBufferView);
+    m_commandList->DrawIndexedInstanced(mesh.indexCount, 1, 0, 0, 0);
 }
 
 void Engine::Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES before,

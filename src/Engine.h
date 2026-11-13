@@ -59,7 +59,7 @@ class Engine {
     void CreateFence();
 
     ComPtr<ID3D12Resource> CreateUploadBuffer(UINT64 size);
-    Mesh CreateMesh(const std::vector<Vertex> &vertices);
+    Mesh CreateMesh(const MeshData &data);
     void SetMeshConstants(FrameResource &frame, UINT drawIndex,
                           const MeshConstants &constants);
     void DrawMesh(const Mesh &mesh);
