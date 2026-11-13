@@ -22,6 +22,8 @@ using namespace DirectX;
 namespace {
 
 constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+// 스텐실은 아직 쓰지 않는다.
+constexpr DXGI_FORMAT kDepthFormat = DXGI_FORMAT_D32_FLOAT;
 
 #ifdef _DEBUG
 constexpr bool kEnableDebugLayer = true;
@@ -81,6 +83,7 @@ void Engine::Initialize() {
     CreateCommandObjects();
     CreateSwapChain();
     CreateRenderTargets();
+    CreateDepthBuffer();
     CreatePipeline();
 
     m_sphere = Mesh::Create(m_device.Get(), MakeSphere(1.0f, 96, 64));
@@ -224,6 +227,48 @@ void Engine::CreateRenderTargets() {
     }
 }
 
+void Engine::CreateDepthBuffer() {
+    // RTV처럼 DSV도 디스크립터 힙의 칸에 만든다. Clear와 OMSet은 리소스가
+    // 아니라 이 칸(어떤 형식으로 어떻게 쓸지 적은 기록)을 받는다.
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+    heapDesc.NumDescriptors = 1;
+    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+    Check(m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_dsvHeap)),
+          "CreateDescriptorHeap");
+
+    // GPU만 쓰는 텍스처라 기본 힙에 둔다. 크기는 백버퍼와 같아야 한다.
+    D3D12_HEAP_PROPERTIES heap = {};
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC desc = {};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = kWidth;
+    desc.Height = kHeight;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = kDepthFormat;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+    // 매 프레임 1.0으로 지우므로, 같은 값을 최적화 클리어 값으로 알려 준다.
+    D3D12_CLEAR_VALUE clearValue = {};
+    clearValue.Format = kDepthFormat;
+    clearValue.DepthStencil.Depth = 1.0f;
+
+    // 깊이 쓰기 상태로 만들고 계속 그 상태로 둔다. 셰이더가 깊이를 읽는 패스가
+    // 없어서 배리어가 필요 없다.
+    Check(m_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                                            &clearValue,
+                                            IID_PPV_ARGS(&m_depthBuffer)),
+          "CreateCommittedResource");
+
+    m_device->CreateDepthStencilView(
+        m_depthBuffer.Get(), nullptr,
+        m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
+}
+
 void Engine::CreatePipeline() {
     // 루트 시그니처는 셰이더가 받는 인자 목록이다. 지금은 VS의 b0 하나다.
     // b0는 드로우마다 바뀌므로, 디스크립터를 거치지 않고 GPU 주소를 바로
@@ -287,6 +332,12 @@ void Engine::CreatePipeline() {
     desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
     desc.RasterizerState.DepthClipEnable = TRUE;
 
+    // 이미 그린 것보다 가까운 픽셀만 남기고, 남긴 픽셀의 깊이를 기록한다.
+    desc.DepthStencilState.DepthEnable = TRUE;
+    desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+    desc.DSVFormat = kDepthFormat;
+
     // 블렌딩은 꺼져 있지만, Direct3D가 불투명으로 취급하는 값을 채운다.
     D3D12_RENDER_TARGET_BLEND_DESC &blend = desc.BlendState.RenderTarget[0];
     blend.SrcBlend = D3D12_BLEND_ONE;
@@ -343,9 +394,15 @@ void Engine::Render() {
         m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
     rtv.ptr += SIZE_T(m_backBufferIndex) * m_rtvDescriptorSize;
 
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv =
+        m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
+
+    // 깊이는 가장 먼 값(1.0)으로 지워서, 처음 그리는 픽셀은 항상 통과하게 한다.
     const float clearColor[] = {0.0f, 0.2f, 0.4f, 1.0f};
     m_commandList->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
-    m_commandList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    m_commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0,
+                                         0, nullptr);
+    m_commandList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
     const D3D12_VIEWPORT viewport = {
         0.0f, 0.0f, static_cast<float>(kWidth), static_cast<float>(kHeight),
@@ -372,8 +429,8 @@ void Engine::Render() {
         XMMatrixPerspectiveFovLH(2.0f * std::atan(0.5f / 0.8f),
                                  float(kWidth) / float(kHeight), 0.01f, 100.0f);
 
-    // 구 6개를 먼저, 바닥을 마지막에 그린다. 깊이 버퍼가 아직 없어서 나중에
-    // 그린 것이 앞뒤와 상관없이 위에 덮인다.
+    // 구 6개를 먼저, 바닥을 마지막에 그린다. 깊이 테스트가 있어서 그리는
+    // 순서와 상관없이 카메라에 가까운 것이 남는다.
     UINT drawIndex = 0;
     for (const SphereDesc &sphere : kSpheres) {
         const XMMATRIX model =

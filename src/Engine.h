@@ -41,6 +41,7 @@ class Engine {
     void CreateCommandObjects();
     void CreateSwapChain();
     void CreateRenderTargets();
+    void CreateDepthBuffer();
     void CreatePipeline();
     void CreateFence();
 
@@ -68,6 +69,11 @@ class Engine {
     ComPtr<ID3D12Resource> m_renderTargets[kBackBufferCount];
     UINT m_rtvDescriptorSize = 0;
     UINT m_backBufferIndex = 0;
+
+    // GPU만 읽고 쓰고 프레임들은 큐에서 차례로 실행되므로, 프레임이 2개 진행
+    // 중이어도 하나면 된다.
+    ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
+    ComPtr<ID3D12Resource> m_depthBuffer;
 
     ComPtr<ID3D12RootSignature> m_rootSignature;
     ComPtr<ID3D12PipelineState> m_pipelineState;
