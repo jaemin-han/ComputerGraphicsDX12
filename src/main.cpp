@@ -1,7 +1,9 @@
-// Minimal Direct3D 12 program: one window, one triangle, nothing else.
+// 최소한의 Direct3D 12 프로그램이다. 창 하나에 삼각형 하나를 그리고, 프레임
+// 2개를 동시에 진행해 GPU가 이전 프레임을 실행하는 동안 CPU가 다음 프레임을
+// 기록한다.
 //
-// Read it top to bottom. Initialize() shows the order objects are created in,
-// and Render() shows everything the GPU is asked to do in one frame.
+// 위에서 아래로 읽는다. Initialize()는 객체를 만드는 순서를, Render()는 한
+// 프레임 동안 GPU에 시키는 일 전체를 보여 준다.
 
 #include <windows.h>
 
@@ -14,14 +16,12 @@
 #include <cstddef>
 #include <cstring>
 #include <exception>
-#include <filesystem>
-#include <fstream>
 #include <iostream>
-#include <iterator>
-#include <sstream>
 #include <stdexcept>
-#include <string>
 #include <vector>
+
+#include "Util.h"
+#include "Window.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -30,6 +30,9 @@ namespace {
 constexpr UINT kWidth = 1280;
 constexpr UINT kHeight = 720;
 constexpr UINT kBackBufferCount = 2;
+// CPU가 GPU를 기다리지 않고 앞서 제출할 수 있는 프레임 수다. 스왑체인이
+// 정하는 kBackBufferCount와는 별개다.
+constexpr UINT kFrameCount = 2;
 constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
 #ifdef _DEBUG
@@ -43,59 +46,20 @@ struct Vertex {
     float color[3];
 };
 
-void Check(HRESULT hr, const char *action) {
-    if (SUCCEEDED(hr))
-        return;
-
-    std::ostringstream message;
-    message << action << " failed (HRESULT 0x" << std::hex
-            << static_cast<unsigned long>(hr) << ")";
-    throw std::runtime_error(message.str());
-}
-
-// Shaders are compiled by the build and copied next to the executable, so the
-// lookup does not depend on the working directory.
-std::vector<char> LoadCompiledShader(const char *fileName) {
-    wchar_t executablePath[MAX_PATH];
-    GetModuleFileNameW(nullptr, executablePath, MAX_PATH);
-    const std::filesystem::path path =
-        std::filesystem::path(executablePath).parent_path() / fileName;
-
-    std::ifstream file(path, std::ios::binary);
-    if (!file)
-        throw std::runtime_error("Cannot open shader: " + path.string());
-
-    return {std::istreambuf_iterator<char>(file),
-            std::istreambuf_iterator<char>()};
-}
-
-// Debug layer messages normally reach only a debugger. Printing them keeps
-// validation errors visible in the console as well.
-void CALLBACK OnD3D12Message(D3D12_MESSAGE_CATEGORY,
-                             D3D12_MESSAGE_SEVERITY severity, D3D12_MESSAGE_ID,
-                             LPCSTR description, void *) {
-    if (severity > D3D12_MESSAGE_SEVERITY_WARNING)
-        return;
-
-    const char *label =
-        severity == D3D12_MESSAGE_SEVERITY_WARNING ? "WARNING" : "ERROR";
-    std::cerr << "[D3D12 " << label << "] " << description << std::endl;
-}
-
-LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam,
-                            LPARAM lParam) {
-    if (message == WM_DESTROY) {
-        PostQuitMessage(0);
-        return 0;
-    }
-    return DefWindowProc(window, message, wParam, lParam);
-}
+// 프레임 하나가 소유하는 자원이다. GPU가 그 프레임을 실행하는 동안 유지돼야
+// 한다.
+struct FrameResource {
+    // 기록한 명령은 GPU가 끝낼 때까지 이 메모리에 남는다.
+    ComPtr<ID3D12CommandAllocator> commandAllocator;
+    // 이 프레임을 제출한 뒤 Signal한 값이다. 펜스가 이 값에 도달하면 할당자를
+    // Reset할 수 있다.
+    UINT64 fenceValue = 0;
+};
 
 class HelloTriangleApp {
   public:
     ~HelloTriangleApp() {
-        // The GPU may still be using the resources this object is about to
-        // release.
+        // 이 객체가 해제하려는 리소스를 GPU가 아직 쓰고 있을 수 있다.
         if (m_fenceEvent) {
             try {
                 WaitForGpu();
@@ -107,7 +71,7 @@ class HelloTriangleApp {
     }
 
     void Initialize() {
-        InitWindow();
+        m_window = CreateAppWindow(kWidth, kHeight, L"Hello DX12");
         CreateDevice();
         CreateCommandObjects();
         CreateSwapChain();
@@ -133,38 +97,10 @@ class HelloTriangleApp {
     }
 
   private:
-    void InitWindow() {
-        const HINSTANCE instance = GetModuleHandle(nullptr);
-        const wchar_t *className = L"HelloDX12Window";
-
-        WNDCLASSEX windowClass = {};
-        windowClass.cbSize = sizeof(windowClass);
-        windowClass.lpfnWndProc = WindowProc;
-        windowClass.hInstance = instance;
-        windowClass.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        windowClass.lpszClassName = className;
-        if (!RegisterClassEx(&windowClass))
-            Check(HRESULT_FROM_WIN32(GetLastError()), "RegisterClassEx");
-
-        // The swap chain is never resized, so the window size stays fixed.
-        const DWORD style =
-            WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
-        RECT rect = {0, 0, static_cast<LONG>(kWidth),
-                     static_cast<LONG>(kHeight)};
-        AdjustWindowRect(&rect, style, FALSE);
-
-        m_window = CreateWindowEx(
-            0, className, L"Hello DX12", style, CW_USEDEFAULT, CW_USEDEFAULT,
-            rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr,
-            instance, nullptr);
-        if (!m_window)
-            Check(HRESULT_FROM_WIN32(GetLastError()), "CreateWindowEx");
-    }
-
     void CreateDevice() {
         UINT factoryFlags = 0;
         if (kEnableDebugLayer) {
-            // This has to happen before the device is created.
+            // 디바이스를 만들기 전에 켜야 한다.
             ComPtr<ID3D12Debug> debug;
             if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
                 debug->EnableDebugLayer();
@@ -177,7 +113,7 @@ class HelloTriangleApp {
         Check(CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&m_factory)),
               "CreateDXGIFactory2");
 
-        // A machine can expose several adapters, so ask for the fastest first.
+        // 어댑터가 여러 개일 수 있어서 가장 빠른 것부터 요청한다.
         ComPtr<IDXGIAdapter1> adapter;
         for (UINT i = 0; m_factory->EnumAdapterByGpuPreference(
                              i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
@@ -218,17 +154,22 @@ class HelloTriangleApp {
                                            IID_PPV_ARGS(&m_commandQueue)),
               "CreateCommandQueue");
 
-        Check(
-            m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                             IID_PPV_ARGS(&m_commandAllocator)),
-            "CreateCommandAllocator");
+        for (FrameResource &frame : m_frames) {
+            Check(m_device->CreateCommandAllocator(
+                      D3D12_COMMAND_LIST_TYPE_DIRECT,
+                      IID_PPV_ARGS(&frame.commandAllocator)),
+                  "CreateCommandAllocator");
+        }
 
+        // 리스트는 하나면 충분하다. Reset할 때 붙인 할당자에 기록할 뿐이고,
+        // 제출한 직후 바로 Reset할 수 있다.
         Check(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                          m_commandAllocator.Get(), nullptr,
+                                          m_frames[0].commandAllocator.Get(),
+                                          nullptr,
                                           IID_PPV_ARGS(&m_commandList)),
               "CreateCommandList");
 
-        // A command list starts open, but Render() expects to Reset() it.
+        // 커맨드 리스트는 열린 상태로 만들어지지만 Render()는 Reset()부터 한다.
         Check(m_commandList->Close(), "Close");
     }
 
@@ -242,14 +183,14 @@ class HelloTriangleApp {
         desc.BufferCount = kBackBufferCount;
         desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
-        // Direct3D 12 swap chains present through the queue, not the device.
+        // Direct3D 12 스왑체인은 디바이스가 아니라 큐를 통해 Present한다.
         ComPtr<IDXGISwapChain1> swapChain;
         Check(m_factory->CreateSwapChainForHwnd(m_commandQueue.Get(), m_window,
                                                 &desc, nullptr, nullptr,
                                                 &swapChain),
               "CreateSwapChainForHwnd");
 
-        // Alt+Enter would need the resize path this program does not have.
+        // Alt+Enter를 받으려면 이 프로그램에 없는 리사이즈 경로가 필요하다.
         Check(m_factory->MakeWindowAssociation(m_window, DXGI_MWA_NO_ALT_ENTER),
               "MakeWindowAssociation");
 
@@ -280,8 +221,8 @@ class HelloTriangleApp {
     }
 
     void CreatePipeline() {
-        // The triangle uses no constants or textures, so the root signature
-        // only has to allow the input assembler.
+        // 삼각형은 상수도 텍스처도 쓰지 않으므로 루트 시그니처는 입력
+        // 어셈블러만 허용하면 된다.
         D3D12_ROOT_SIGNATURE_DESC rootDesc = {};
         rootDesc.Flags =
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
@@ -315,7 +256,7 @@ class HelloTriangleApp {
              D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         };
 
-        // Every fixed-function state lives in this one immutable object.
+        // 고정 기능 상태는 전부 이 불변 객체 하나에 들어간다.
         D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
         desc.pRootSignature = m_rootSignature.Get();
         desc.VS = {vertexShader.data(), vertexShader.size()};
@@ -331,7 +272,7 @@ class HelloTriangleApp {
         desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
         desc.RasterizerState.DepthClipEnable = TRUE;
 
-        // Blending is off, but these are the values Direct3D treats as opaque.
+        // 블렌딩은 꺼져 있지만, Direct3D가 불투명으로 취급하는 값을 채운다.
         D3D12_RENDER_TARGET_BLEND_DESC &blend = desc.BlendState.RenderTarget[0];
         blend.SrcBlend = D3D12_BLEND_ONE;
         blend.DestBlend = D3D12_BLEND_ZERO;
@@ -348,15 +289,15 @@ class HelloTriangleApp {
     }
 
     void CreateVertexBuffer() {
-        // Direct3D treats clockwise triangles as front-facing by default.
+        // Direct3D는 기본적으로 시계 방향 삼각형을 앞면으로 본다.
         const Vertex vertices[] = {
             {{0.0f, 0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}},
             {{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}},
             {{-0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}},
         };
 
-        // An upload heap is CPU-writable and GPU-readable, which avoids a copy
-        // pass for these three vertices.
+        // 업로드 힙은 CPU가 쓰고 GPU가 읽을 수 있어서, 정점 세 개를 위해 복사
+        // 패스를 따로 둘 필요가 없다.
         D3D12_HEAP_PROPERTIES heap = {};
         heap.Type = D3D12_HEAP_TYPE_UPLOAD;
 
@@ -410,9 +351,13 @@ class HelloTriangleApp {
     }
 
     void Render() {
-        // Safe because WaitForGpu() ran at the end of the previous frame.
-        Check(m_commandAllocator->Reset(), "ID3D12CommandAllocator::Reset");
-        Check(m_commandList->Reset(m_commandAllocator.Get(),
+        // 이 칸은 kFrameCount 프레임 전에 마지막으로 제출됐다. GPU가 그
+        // 제출을 지나간 뒤에야 할당자를 다시 쓸 수 있다.
+        FrameResource &frame = m_frames[m_frameIndex];
+        WaitForFenceValue(frame.fenceValue);
+
+        Check(frame.commandAllocator->Reset(), "ID3D12CommandAllocator::Reset");
+        Check(m_commandList->Reset(frame.commandAllocator.Get(),
                                    m_pipelineState.Get()),
               "ID3D12GraphicsCommandList::Reset");
 
@@ -451,30 +396,40 @@ class HelloTriangleApp {
 
         Check(m_swapChain->Present(1, 0), "Present");
 
-        WaitForGpu();
+        // 이 프레임을 제출한 번호를 기억해 두고, 기다리지 않고 넘어간다.
+        frame.fenceValue = Signal();
         m_backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
+        m_frameIndex = (m_frameIndex + 1) % kFrameCount;
     }
 
-    // Only one frame is ever in flight: the CPU waits here until the GPU has
-    // finished everything submitted so far.
-    void WaitForGpu() {
-        const UINT64 value = ++m_fenceValue;
+    // 지금까지 제출한 모든 작업 뒤에 펜스 쓰기를 큐에 넣고, GPU가 거기에
+    // 도달했을 때 펜스가 갖게 될 값을 돌려준다.
+    UINT64 Signal() {
+        const UINT64 value = ++m_fenceCounter;
         Check(m_commandQueue->Signal(m_fence.Get(), value), "Signal");
-
-        if (m_fence->GetCompletedValue() < value) {
-            Check(m_fence->SetEventOnCompletion(value, m_fenceEvent),
-                  "SetEventOnCompletion");
-            WaitForSingleObject(m_fenceEvent, INFINITE);
-        }
+        return value;
     }
+
+    void WaitForFenceValue(UINT64 value) {
+        if (m_fence->GetCompletedValue() >= value)
+            return;
+
+        Check(m_fence->SetEventOnCompletion(value, m_fenceEvent),
+              "SetEventOnCompletion");
+        WaitForSingleObject(m_fenceEvent, INFINITE);
+    }
+
+    // 지금까지 제출한 모든 작업을 GPU가 끝낼 때까지 기다린다.
+    void WaitForGpu() { WaitForFenceValue(Signal()); }
 
     HWND m_window = nullptr;
 
     ComPtr<IDXGIFactory6> m_factory;
     ComPtr<ID3D12Device> m_device;
     ComPtr<ID3D12CommandQueue> m_commandQueue;
-    ComPtr<ID3D12CommandAllocator> m_commandAllocator;
     ComPtr<ID3D12GraphicsCommandList> m_commandList;
+    FrameResource m_frames[kFrameCount];
+    UINT m_frameIndex = 0;
 
     ComPtr<IDXGISwapChain3> m_swapChain;
     ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
@@ -488,7 +443,9 @@ class HelloTriangleApp {
     D3D12_VERTEX_BUFFER_VIEW m_vertexBufferView = {};
 
     ComPtr<ID3D12Fence> m_fence;
-    UINT64 m_fenceValue = 0;
+    // 마지막으로 Signal()에 넘긴 값이다. 각 프레임은 자기 값을
+    // FrameResource::fenceValue에 따로 보관한다.
+    UINT64 m_fenceCounter = 0;
     HANDLE m_fenceEvent = nullptr;
 };
 
