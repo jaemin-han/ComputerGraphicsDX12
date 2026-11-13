@@ -22,7 +22,7 @@ Part 2(DX11)에서 배운 내용을 DX12로 옮기며 학습하고, 결과를 �
 - **완료:** 메시와 프레임 자원 분리(리팩터링). 사용자 요청으로 `Engine.cpp` 의 메시 함수를 떼어 냈다. `Mesh` 가 자기 버퍼를 만들고 그리며(`Mesh::Create`, `Mesh::Draw`), 드로우별 상수 칸 쓰기는 메시가 아니라 `FrameResource::WriteConstants` 가 맡는다. 화면은 이전 단계와 같다.
 - **완료:** 깊이 없는 3D 장면. Part 2 배치대로 구 6개와 바닥을 궤도 카메라로 그리고 노멀을 색으로 출력한다. 깊이 버퍼가 없어서 마지막에 그린 바닥이 구의 아랫부분을 덮는다. 다음 단계와 비교하려고 일부러 남긴 상태다.
 - **완료:** 깊이 버퍼. 사용자가 "깊이 버퍼는 GPU만 읽고 쓰고 프레임은 큐에서 차례로 실행되므로 엔진에 하나"로 정했다. 바닥이 구를 덮던 가림이 바로잡혔다.
-- **진행 중:** 없음. 다음은 텍스처(큐브맵 2장, 바닥)와 스카이 패스(두 번째 PSO)다.
+- **진행 중:** 텍스처. ① vcpkg로 DirectXTex 연결(완료, 화면 변화 없음) ② 텍스처 업로드(업로드 버퍼 → 복사 → 배리어 → 대기, 사용자 설계 중) ③ SRV 힙과 디스크립터 테이블로 바닥에 텍스처 ④ 스카이 패스(두 번째 PSO) 순서로 나눠 진행한다. 텍스처 파일은 Part 2 자산 대신 사용자 요청으로 Codex가 CC0 자산(Poly Haven)을 받아 `assets/textures/` 에 두었다. 출처, 라이선스, 변환 방법은 `assets/README.md` 에 있다.
 - **다음 목표:** Part 2의 레이 씬을 DX12로 렌더링한다. 필요 범위는 `1차 목표: 레이 씬` 절에 있다.
 
 ### 작업 인수인계
@@ -31,9 +31,9 @@ Part 2(DX11)에서 배운 내용을 DX12로 옮기며 학습하고, 결과를 �
 
 **최신 기록**
 
-- 변경한 파일 — `src/Engine.*` 에 `CreateDepthBuffer()` 를 더했다. DSV 힙(1칸), 기본 힙의 `D32_FLOAT` 텍스처(`ALLOW_DEPTH_STENCIL`, 최적화 클리어 값 1.0), `DEPTH_WRITE` 상태로 만들어 그대로 두는 깊이 버퍼, DSV를 만든다. PSO에 깊이 테스트(`LESS`, 쓰기 켬)와 `DSVFormat` 을 넣고, `Render()` 가 매 프레임 깊이를 1.0으로 지운 뒤 `OMSetRenderTargets` 에 DSV를 함께 넘긴다. 멤버는 `m_dsvHeap`, `m_depthBuffer` 다. 이전 커밋 `bc5eee7` 에서 깊이 없는 3D 장면(정점 형식, `Geometry.*`, 노멀 셰이더, 구 6개와 바닥, 궤도 카메라, `Engine::DrawMesh`)을 넣었다.
-- 검증 결과 — Claude Code가 Debug 전체 빌드와 실행을 확인했다. 깊이 없는 단계와 비슷한 시각(실행 2초, 5초 뒤)에 캡처해 비교했다. 바닥이 구 아랫부분을 덮던 문제와, 뒤의 작은 구가 앞의 큰 구 위에 그려지던 문제가 모두 사라졌다. 바닥을 마지막에 그리는데도 구가 보인다. stderr에 D3D12 메시지가 없고 종료 코드 0으로 끝난다. 사용자 눈으로 본 확인은 `미실행`.
-- 다음 할 일 — 한꺼번에 구현해 보관했던 stash는 내용을 모두 커밋으로 옮긴 뒤 사용자 확인을 받아 지웠다. 다음은 텍스처와 스카이 패스, 레이 PS 순서다. 레이 씬에서 크기가 다른 b1(512B)이 섞이면 "i번 칸" 대신 지금까지 쓴 바이트 수로 칸을 나눌지 사용자가 정한다. 학습에서 남은 약점은 배리어는 리소스를 받고 Clear와 OMSet은 디스크립터 핸들을 받는 이유, 디스크립터 칸을 덮어쓰거나 리소스를 해제할 때의 영향, 루트 시그니처다. 사용자 결정 필요: 전체 계획의 판단 1 기준 조정, 레이 씬의 포트폴리오 포함 여부, Part 2 자산과 레이 셰이더를 가져올지.
+- 변경한 파일 — `vcpkg.json`(DirectXTex, 기본 기능 끄고 `dx12` 만), `Directory.Build.props`(Part 3과 같은 vcpkg 매니페스트 설정, 설치 위치는 `vcpkg_installed/`), `Directory.Build.targets`(vcpkg를 못 찾으면 원인을 알려 주는 오류), `.gitignore`(`vcpkg_installed/`)를 더했다. 코드 변경은 없다. 이전 커밋 `c00c072` 에서 깊이 버퍼를 넣었다.
+- 검증 결과 — Claude Code가 Debug 빌드를 확인했다. vcpkg가 `directxtex[core,dx12]` 를 binary cache에서 설치했고(약 15초), `vcpkg_installed/x64-windows` 에 `DirectXTex.h`, `d3dx12.h`, Debug와 Release용 `DirectXTex.lib`(정적 라이브러리)가 생겼다. 빌드 뒤 실행 화면은 깊이 버퍼 단계와 같고 stderr에 D3D12 메시지가 없으며 종료 코드 0으로 끝난다. 아직 DirectXTex 함수를 부르지 않아서 링크 확인은 `미실행`(업로드 단계에서 확인한다).
+- 다음 할 일 — 텍스처 업로드를 사용자와 설계한다. 질문은 기본 힙 텍스처의 처음 상태, 복사 뒤 배리어(어느 상태에서 어느 상태로), 업로드 버퍼를 해제해도 되는 시점이다. Codex가 `assets/textures/` 에 `kloofendal_specular.dds`(t2, 512² × 6면, RGBA16F), `kloofendal_diffuse.dds`(t1, 32² × 6면, RGBA16F, 코사인 가중 irradiance를 π로 나눈 값), `cobblestone_albedo.png`(t3, 1024², RGBA8, sRGB 색 데이터)를 두었다. Claude Code가 검토했다. SHA-256 3개가 `assets/README.md` 와 일치하고, DDS 헤더(DX10, 큐브 플래그, 6면, 밉 1, 파일 길이)와 PNG 크기가 기록과 같다. 두 큐브맵을 +Y / −X +Z +X −Z / −Y 십자로 펼쳐 지평선과 위·아래 면의 이음매가 이어지는 것도 눈으로 확인했다. 바닥 PNG를 UNORM으로 읽을지 sRGB로 읽을지는 바닥 텍스처 단계에서 정한다. 그다음은 SRV 힙과 디스크립터 테이블, 스카이 패스, 레이 PS 순서다. 레이 씬에서 크기가 다른 b1(512B)이 섞이면 "i번 칸" 대신 지금까지 쓴 바이트 수로 칸을 나눌지 사용자가 정한다. 학습에서 남은 약점은 배리어는 리소스를 받고 Clear와 OMSet은 디스크립터 핸들을 받는 이유, 디스크립터 칸을 덮어쓰거나 리소스를 해제할 때의 영향, 루트 시그니처다. 사용자 결정 필요: 전체 계획의 판단 1 기준 조정, 레이 씬의 포트폴리오 포함 여부, Part 2 자산과 레이 셰이더를 가져올지.
 
 ## 기준 자료
 
@@ -55,7 +55,7 @@ Hello Triangle에 더해야 하는 기능은 다음과 같다. 범위만 적은 
 - **PSO 2개:** 스카이 패스는 깊이를 쓰지 않는다.
 - **텍스처:** `t1`, `t2` 큐브맵(DDS), `t3` 바닥(JPG), 샘플러 `s0`. 전부 `SampleLevel(..., 0)`로 읽어서 밉 생성은 필요 없다.
 
-ImGui와 리사이즈는 이 단계의 범위가 아니다. 정답 화면과 비교할 때는 카메라와 조명이 시간에 따라 움직이므로 같은 시각으로 맞춘다.
+ImGui와 리사이즈는 이 단계의 범위가 아니다. 정답 화면과 비교할 때는 카메라와 조명이 시간에 따라 움직이므로 같은 시각으로 맞춘다. 텍스처는 Part 2 자산 대신 CC0 자산(`assets/`)을 쓰므로, 비교는 색이 아니라 구조(가림, 반사와 굴절이 생기는 위치, 그림자 위치)를 기준으로 한다.
 
 이 장면은 Part 2 실습과 Shadertoy 원본(`fsGcW3`)에서 파생됐다. 포트폴리오 제출물에 넣을지는 `작업 방식`의 규칙과 원본 라이선스를 확인한 뒤 사용자가 정한다.
 
@@ -73,7 +73,7 @@ Windows C++17 프로젝트다. `src/main.cpp` 에 진입점이, `src/Engine.*` �
 
 ## 빌드와 실행
 
-Visual Studio 18, MSVC v145, Windows SDK가 필요하다. 프로젝트 루트에서 Developer PowerShell을 열고 실행한다.
+Visual Studio 18, MSVC v145, Windows SDK, 부트스트랩한 vcpkg가 필요하다. vcpkg는 `VCPKG_ROOT` 환경 변수나 이 프로젝트 옆 폴더(`..\vcpkg`)에서 찾는다. 외부 라이브러리는 `vcpkg.json` 에 적고, 첫 빌드 때 MSBuild가 `vcpkg_installed/` 에 설치한다(`Directory.Build.props`). 프로젝트 루트에서 Developer PowerShell을 열고 실행한다.
 
 ```powershell
 MSBuild.exe .\ComputerGraphicsDX12.sln /p:Configuration=Debug /p:Platform=x64 /m /v:minimal
@@ -101,6 +101,7 @@ MSBuild는 FXC로 HLSL을 Shader Model 5.1로 컴파일하고 `.cso` 를 실행 
 - **루트 시그니처:** 셰이더가 받는 인자 목록이다. DX11에서 단계별 슬롯 판을 드라이버가 맞춰 주던 일을 직접 선언한다. 파라미터 0은 VS의 b0이고 루트 CBV다. 드로우마다 바뀌는 값이라, 디스크립터 테이블처럼 힙의 view를 드로우마다 만들고 그 칸의 수명까지 관리하는 대신 주소만 넘긴다. 텍스처(t1~t3)는 view가 필요하므로 레이 씬에서 디스크립터 테이블로 넣는다.
 - **깊이 버퍼:** 엔진에 하나다. 깊이 버퍼는 GPU만 읽고 쓰고, 프레임들의 명령은 한 큐에서 차례로 실행되므로 다음 프레임의 클리어가 이전 프레임의 드로우와 겹치지 않는다. CPU가 쓰고 GPU가 나중에 읽는 상수 버퍼와 다른 점이다. 백버퍼가 여러 장인 이유(화면 출력이 한 장을 읽고 있음)도 깊이 버퍼에는 없다. 형식은 `D32_FLOAT` 이고 `DEPTH_WRITE` 상태로 만들어 그대로 두므로 배리어가 없다. 셰이더가 깊이를 읽는 패스(그림자 맵 등)가 생기면 배리어가 필요하다. RTV처럼 Clear와 OMSet은 리소스가 아니라 DSV 힙의 칸(디스크립터)을 받는다.
 - **창과 스왑체인:** 창 크기는 고정이고 리사이즈 경로가 없다. 그래서 Alt+Enter도 막아 두었다.
-- **헬퍼 헤더:** `d3dx12.h`는 Windows SDK에 없어서 쓰지 않고, D3D12 구조체를 직접 채운다. 계획에 있는 `directx-headers`는 필요해질 때 추가한다.
+- **외부 라이브러리:** 텍스처 파일(DDS, JPG, PNG) 해석은 vcpkg의 DirectXTex(`dx12` 기능)에 맡긴다. 사용자가 DirectXTK12 대신 골랐다. TK12의 `ResourceUploadBatch` 는 업로드, 복사, 상태 전환까지 숨기지만, DirectXTex는 CPU 이미지까지만 만들어 주므로 업로드 버퍼, `CopyTextureRegion`, 배리어, 완료 대기는 이 프로젝트 코드에 남는다.
+- **헬퍼 헤더:** DirectXTex의 `dx12` 기능이 `directx-headers`(`d3dx12.h`)를 함께 설치하지만, D3D12 구조체는 지금처럼 직접 채운다.
 - **디버그 레이어:** Debug 빌드에서만 켜진다. `OnD3D12Message`가 경고 이상을 콘솔로 출력한다.
 - **어댑터 선택:** 이 PC에는 NVIDIA, AMD 내장, Parsec 가상 어댑터가 함께 있어서 `DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE`로 고른다. 선택된 어댑터 이름이 stdout에 찍힌다.

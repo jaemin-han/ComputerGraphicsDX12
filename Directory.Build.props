@@ -1,0 +1,14 @@
+<Project>
+  <!-- vcpkg 매니페스트 모드. 도구는 VCPKG_ROOT나 옆 폴더의 vcpkg를 쓰고, 설치한 라이브러리는 이 프로젝트의 vcpkg_installed에 둔다. -->
+  <PropertyGroup>
+    <VcpkgRoot Condition="'$(VcpkgRoot)' == '' and '$(VCPKG_ROOT)' != ''">$(VCPKG_ROOT)\</VcpkgRoot>
+    <VcpkgRoot Condition="'$(VcpkgRoot)' == ''">$(MSBuildThisFileDirectory)..\vcpkg\</VcpkgRoot>
+    <VCLibPackagePath>$(VcpkgRoot)scripts\buildsystems\msbuild\vcpkg</VCLibPackagePath>
+    <VcpkgEnabled>true</VcpkgEnabled>
+    <VcpkgEnableManifest>true</VcpkgEnableManifest>
+    <VcpkgManifestRoot>$(MSBuildThisFileDirectory)</VcpkgManifestRoot>
+    <VcpkgInstalledDir>$(MSBuildThisFileDirectory)vcpkg_installed\</VcpkgInstalledDir>
+    <VcpkgTriplet Condition="'$(Platform)' == 'x64'">x64-windows</VcpkgTriplet>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+</Project>

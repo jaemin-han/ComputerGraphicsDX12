@@ -1,0 +1,6 @@
+<Project>
+  <!-- vcpkg가 없으면 라이브러리 헤더를 못 찾는 오류 대신 원인을 바로 알려 준다. -->
+  <Target Name="CheckVcpkg" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('$(VcpkgRoot)vcpkg.exe')" Text="VCPKG_ROOT를 부트스트랩한 vcpkg 폴더로 지정하거나, 이 프로젝트 옆 폴더(..\vcpkg)에 vcpkg를 두세요." />
+  </Target>
+</Project>

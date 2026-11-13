@@ -5,3 +5,6 @@
 # MSBuild output and intermediates
 x64/
 Computer.*/
+
+# vcpkg manifest install tree
+vcpkg_installed/
