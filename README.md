@@ -14,6 +14,7 @@ Part 2(DX11)에서 배운 내용을 DX12로 옮기며 학습하고, 결과를 �
 
 작업을 이어받는 에이전트는 여기부터 본다. 단계를 끝낸 에이전트가 이 절을 갱신한다.
 
+- **완료(개발 환경):** `ComputerGraphicsDX12.vcxproj.filters` 를 추가해 솔루션 탐색기를 역할별 가상 폴더로 정리했다. 실제 파일 경로와 빌드 설정은 그대로다. 파일을 추가·삭제·이동할 때는 아래 `솔루션 탐색기 관리` 규칙에 따라 프로젝트와 필터를 함께 갱신한다.
 - **완료:** Hello Triangle. 창, 디바이스, 스왑체인, 커맨드, PSO, 펜스, 프레임 루프를 `src/main.cpp`에 구현했다. 사용자가 이 흐름을 학습했고, 코드 없이 한 프레임을 설명하는 확인까지 마쳤다.
 - **완료:** 프레임 2개 동시 진행. 사용자가 할당자와 "그 프레임이 기다릴 펜스 값"을 프레임별로, 큐, 리스트, 펜스, 이벤트, 카운터를 앱 전체에 하나로 정했다. 원래 계획의 11/13 항목을 앞당겼다.
 - **완료:** 엔진과 메시 분리. 사용자가 "엔진이 메시를 갖고 직접 만들고 그린다, 메시는 데이터만 갖는다"로 정했다. 엔진은 싱글톤 패턴 없이 `main()` 에서 하나 만든다.
@@ -73,6 +74,26 @@ ImGui와 리사이즈는 이 단계의 범위가 아니다. 정답 화면과 비
 ## 프로젝트 구조
 
 Windows C++17 프로젝트다. `src/main.cpp` 에 진입점이, `src/Engine.*` 에 렌더러(`Engine`)가, `src/FrameResource.*` 에 프레임별 할당자와 상수 칸이, `src/Mesh.*` 에 정점, 메시 데이터, 메시 생성과 그리기가, `src/Geometry.*` 에 구와 사각형 생성이, `src/Texture.*` 에 텍스처 파일 로드와 GPU 업로드 기록이, `src/Pipeline.*` 에 패스별 PSO 생성이, `src/ConstantBuffers.h` 에 셰이더 cbuffer와 같은 배치의 구조체가, `src/Window.*` 에 Win32 창 생성이, `src/Util.*` 에 `Check`, 업로드 버퍼 헬퍼, 실행 파일 폴더, 셰이더 로더, 디버그 레이어 콜백이 있다. `Engine::Initialize()` 에서 초기화 순서를, `Engine::Render()` 에서 한 프레임의 GPU 작업을 확인할 수 있다. `shaders/` 에는 정점·픽셀 셰이더와 공용 선언 파일인 `Common.hlsli` 가 있다. `assets/textures/` 에는 텍스처 파일이 있고, 빌드가 실행 파일 옆 같은 경로로 복사한다. 출처와 라이선스는 `assets/README.md` 에 있다. 별도 테스트 디렉터리는 없다. `x64/` 와 `Computer.6f1c3a52/` 의 빌드 산출물은 버전 관리에서 제외한다.
+
+### 솔루션 탐색기 관리
+
+`ComputerGraphicsDX12.vcxproj.filters` 는 Visual Studio의 표시용 가상 폴더를 정의한다. 실제 디스크 경로와 빌드 항목은 `ComputerGraphicsDX12.vcxproj` 가 관리한다. 같은 클래스의 `.h` 와 `.cpp` 는 같은 필터에 둔다.
+
+| 필터 | 파일 |
+| --- | --- |
+| `Application` | `main.cpp`, `Window.*` |
+| `Renderer` | `Engine.*`, `FrameResource.*`, `Pipeline.*`, `ConstantBuffers.h` |
+| `Resources` | `Geometry.*`, `Mesh.*`, `Texture.*` |
+| `Common` | `Util.*` |
+| `Shaders` | `shaders/` 의 `.hlsl`, `.hlsli` |
+| `Assets` | 텍스처 등 자산 파일 |
+| `Configuration` | `.clang-format` 등 프로젝트에 등록한 설정 파일 |
+
+- Codex와 Claude Code 모두 파일을 프로젝트에 추가·삭제·이동할 때 `.vcxproj` 와 `.vcxproj.filters` 를 함께 갱신한다. 필터 항목의 종류(`ClCompile`, `ClInclude`, `FxCompile`, `None`, `CopyFileToFolders`)와 `Include` 경로는 프로젝트 항목과 일치시킨다.
+- 새 파일은 역할에 맞는 기존 필터에 배치한다. 필터 이름은 실제 폴더가 아니므로 파일 생성 위치는 별도로 확인한다. 필터에만 등록해도 빌드에 포함되는 것은 아니다.
+- `.vcxproj.filters` 는 Git으로 공유한다. 이번 변경이 기존 코드 읽기나 실행에 영향을 주지는 않으므로 진행 중인 기능 작업을 중단할 필요는 없다.
+
+2026-11-15 적용 검증: XML 구문과 프로젝트 항목 27개의 필터 배치를 검사해 누락·중복이 없음을 확인했다. Visual Studio에서 프로젝트를 다시 로드하고 7개 필터 표시를 확인했다. 탐색기의 `Pending Changes Filter` 를 해제해 전체 구성을 표시했다. 표시용 필터와 문서만 변경했으므로 빌드와 앱 실행 검증은 미실행이다.
 
 ## 빌드와 실행
 
