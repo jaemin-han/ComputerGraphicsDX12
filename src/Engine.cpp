@@ -36,25 +36,31 @@ constexpr bool kEnableDebugLayer = false;
 // 법선 행렬(역행렬의 전치)을 전치하면 역행렬이 되므로 invTranspose에는
 // 역행렬을 그대로 넣는다.
 MeshConstants MakeMeshConstants(FXMMATRIX model, CXMMATRIX view,
-                                CXMMATRIX projection) {
-    MeshConstants constants;
+                                CXMMATRIX projection, int objectIndex) {
+    MeshConstants constants = {};
     XMStoreFloat4x4(&constants.model, XMMatrixTranspose(model));
     XMStoreFloat4x4(&constants.invTranspose, XMMatrixInverse(nullptr, model));
     XMStoreFloat4x4(&constants.view, XMMatrixTranspose(view));
     XMStoreFloat4x4(&constants.projection, XMMatrixTranspose(projection));
+    constants.objectIndex = objectIndex;
     return constants;
 }
 
-// Part 2 레이 씬의 구 배치다. 색, 반사, 굴절 값은 레이 PS를 넣을 때 더한다.
-struct SphereDesc {
-    XMFLOAT3 center;
-    float radius;
-};
+// 레이 씬의 물체 번호다. 구는 kSpheres의 번호(0~5)를 쓰고, 바닥은 그
+// 다음이다. 하늘은 레이 PS를 쓰지 않으므로 어떤 물체도 가리키지 않는다.
+constexpr int kGroundIndex = kSphereCount;
+constexpr int kNoObjectIndex = -1;
 
-const SphereDesc kSpheres[] = {
-    {{0.0f, 0.8f, 2.0f}, 0.8f},  {{1.0f, 1.1f, 6.0f}, 1.1f},
-    {{-2.0f, 0.5f, 3.0f}, 0.5f}, {{1.5f, 0.8f, 3.0f}, 0.5f},
-    {{-0.8f, 1.0f, 4.0f}, 1.0f}, {{-2.0f, 1.0f, 7.0f}, 1.0f},
+// Part 2 레이 씬의 구 배치와 재질이다. 중심, 반지름, 그리고 색, 반사율,
+// 굴절률(0이면 불투명), 광택 순서다. 유리 구(0번, 5번)는 색 없이 굴절로만
+// 보이므로 색이 검정이다.
+const Sphere kSpheres[kSphereCount] = {
+    {{0.0f, 0.8f, 2.0f}, 0.8f, {{0.0f, 0.0f, 0.0f}, 0.1f, 1.25f, 32.0f}},
+    {{1.0f, 1.1f, 6.0f}, 1.1f, {{0.3f, 0.3f, 1.0f}, 0.1f, 0.0f, 16.0f}},
+    {{-2.0f, 0.5f, 3.0f}, 0.5f, {{0.8f, 0.8f, 0.1f}, 1.0f, 0.0f, 32.0f}},
+    {{1.5f, 0.8f, 3.0f}, 0.5f, {{0.0f, 1.0f, 1.0f}, 0.0f, 0.0f, 0.0f}},
+    {{-0.8f, 1.0f, 4.0f}, 1.0f, {{1.0f, 0.1f, 0.1f}, 0.5f, 0.0f, 16.0f}},
+    {{-2.0f, 1.0f, 7.0f}, 1.0f, {{0.0f, 0.0f, 0.0f}, 0.1f, 1.5f, 32.0f}},
 };
 
 constexpr float kGroundHalfExtent = 5.0f;
@@ -272,15 +278,16 @@ void Engine::CreateDepthBuffer() {
 
 void Engine::CreatePipeline() {
     // 루트 시그니처는 셰이더가 받는 인자 목록이다.
-    D3D12_ROOT_PARAMETER rootParameters[2] = {};
+    D3D12_ROOT_PARAMETER rootParameters[3] = {};
 
-    // 0: VS의 b0. 드로우마다 바뀌므로, 디스크립터를 거치지 않고 GPU 주소를
-    // 바로 넘기는 루트 CBV로 둔다.
+    // 0: 드로우별 b0. 드로우마다 바뀌므로, 디스크립터를 거치지 않고 GPU
+    // 주소를 바로 넘기는 루트 CBV로 둔다. VS가 행렬을, 레이 PS가 물체 번호를
+    // 읽으므로 모든 단계에 보이게 한다.
     D3D12_ROOT_PARAMETER &meshConstants = rootParameters[kRootMeshConstants];
     meshConstants.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     meshConstants.Descriptor.ShaderRegister = 0; // b0
     meshConstants.Descriptor.RegisterSpace = 0;
-    meshConstants.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    meshConstants.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     // 1: PS의 t1~t3. 텍스처는 view가 있어야 읽을 수 있으므로 힙의 칸을
     // 가리키는 디스크립터 테이블로 둔다. 모든 드로우가 같은 세 장을 쓰므로
@@ -297,6 +304,14 @@ void Engine::CreatePipeline() {
     textures.DescriptorTable.NumDescriptorRanges = 1;
     textures.DescriptorTable.pDescriptorRanges = &textureRange;
     textures.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // 2: 프레임별 b1. 장면 전체의 데이터라 프레임마다 한 번 쓰고 모든
+    // 드로우가 같은 주소를 읽는다. b0처럼 업로드 버퍼의 주소만 넘긴다.
+    D3D12_ROOT_PARAMETER &sceneConstants = rootParameters[kRootSceneConstants];
+    sceneConstants.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    sceneConstants.Descriptor.ShaderRegister = 1; // b1
+    sceneConstants.Descriptor.RegisterSpace = 0;
+    sceneConstants.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     // s0: 바꿀 일이 없는 샘플러라 루트 시그니처에 정적 샘플러로 넣는다.
     // 샘플러 힙과 바인딩 호출이 필요 없다.
@@ -349,7 +364,7 @@ void Engine::CreatePipeline() {
 
     PipelineSettings mesh;
     mesh.vertexShader = "MeshVertexShader.cso";
-    mesh.pixelShader = "TexturePixelShader.cso";
+    mesh.pixelShader = "RayScenePixelShader.cso";
     m_meshPipeline =
         CreateGraphicsPipeline(m_device.Get(), m_rootSignature.Get(),
                                kBackBufferFormat, kDepthFormat, mesh);
@@ -495,6 +510,17 @@ void Engine::Render() {
         XMMatrixPerspectiveFovLH(2.0f * std::atan(0.5f / 0.8f),
                                  float(kWidth) / float(kHeight), 0.01f, 100.0f);
 
+    // 장면 데이터(b1)는 모든 드로우가 같으므로 프레임마다 한 번 쓰고 한 번
+    // 연결한다. 루트 인자는 다시 설정할 때까지 이후 드로우에 남는다.
+    SceneConstants scene = {};
+    XMStoreFloat3(&scene.eyeWorld, eye);
+    scene.groundHalfExtent = kGroundHalfExtent;
+    scene.groundCenter = kGroundCenter;
+    for (int i = 0; i < kSphereCount; ++i)
+        scene.spheres[i] = kSpheres[i];
+    m_commandList->SetGraphicsRootConstantBufferView(
+        kRootSceneConstants, frame.WriteConstants(&scene, sizeof(scene)));
+
     // 하늘: 맨 먼저 깊이 없이 그린다. 커맨드 리스트를 Reset할 때 스카이 PSO로
     // 시작했다. 뷰에서 이동을 빼서 하늘 구가 늘 카메라 중심에 있게 하면,
     // 카메라가 움직여도 하늘은 무한히 먼 것처럼 따라온다. 반지름 1 구를 10배로
@@ -503,19 +529,23 @@ void Engine::Render() {
     skyView.r[3] = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
     DrawMesh(frame, m_sphere,
              MakeMeshConstants(XMMatrixScaling(10.0f, 10.0f, 10.0f), skyView,
-                               projection));
+                               projection, kNoObjectIndex));
 
     // 구 6개를 먼저, 바닥을 마지막에 그린다. 깊이 테스트가 있어서 그리는
     // 순서와 상관없이 카메라에 가까운 것이 남는다. 하늘은 깊이를 쓰지
     // 않았으므로 깊이 버퍼는 클리어 값 그대로이고, 이 메시들은 하늘 위에
     // 덮인다.
     m_commandList->SetPipelineState(m_meshPipeline.Get());
-    for (const SphereDesc &sphere : kSpheres) {
+    // 드로우마다 b0에 물체 번호를 함께 넣어, 레이 PS가 b1에서 자기 재질을
+    // 고르게 한다.
+    for (int i = 0; i < kSphereCount; ++i) {
+        const Sphere &sphere = kSpheres[i];
         const XMMATRIX model =
             XMMatrixScaling(sphere.radius, sphere.radius, sphere.radius) *
             XMMatrixTranslation(sphere.center.x, sphere.center.y,
                                 sphere.center.z);
-        DrawMesh(frame, m_sphere, MakeMeshConstants(model, view, projection));
+        DrawMesh(frame, m_sphere,
+                 MakeMeshConstants(model, view, projection, i));
     }
 
     // 정사각형은 -z를 향하므로 x축으로 90도 돌려 위를 향하게 눕힌다.
@@ -524,7 +554,8 @@ void Engine::Render() {
                         kGroundHalfExtent) *
         XMMatrixRotationX(XM_PIDIV2) *
         XMMatrixTranslation(kGroundCenter.x, kGroundCenter.y, kGroundCenter.z);
-    DrawMesh(frame, m_ground, MakeMeshConstants(groundModel, view, projection));
+    DrawMesh(frame, m_ground,
+             MakeMeshConstants(groundModel, view, projection, kGroundIndex));
 
     Transition(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET,
                D3D12_RESOURCE_STATE_PRESENT);

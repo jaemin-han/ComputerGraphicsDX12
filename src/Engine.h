@@ -31,14 +31,15 @@ class Engine {
     // CPU가 GPU를 기다리지 않고 앞서 제출할 수 있는 프레임 수다. 스왑체인이
     // 정하는 kBackBufferCount와는 별개다.
     static constexpr UINT kFrameCount = 2;
-    // 프레임마다 상수를 쓰는 업로드 버퍼 크기다. 지금은 드로우 8개(하늘, 구
-    // 6개, 바닥)가 256바이트씩 2KB를 쓴다. 넘치면 WriteConstants가 예외를
-    // 던지므로 여유 있게 잡는다.
+    // 프레임마다 상수를 쓰는 업로드 버퍼 크기다. 지금은 장면 b1 하나와 드로우
+    // 8개(하늘, 구 6개, 바닥)의 b0이 256바이트 정렬로 512바이트씩, 약 4.5KB를
+    // 쓴다. 넘치면 WriteConstants가 예외를 던지므로 여유 있게 잡는다.
     static constexpr UINT64 kConstantBufferSize = 64 * 1024;
-    // 루트 시그니처의 파라미터 번호다. 0은 VS의 b0(루트 CBV), 1은 PS의
-    // t1~t3(디스크립터 테이블)이다.
+    // 루트 시그니처의 파라미터 번호다. 0은 드로우별 b0(루트 CBV, VS와 PS),
+    // 1은 PS의 t1~t3(디스크립터 테이블), 2는 프레임별 b1(루트 CBV, PS)이다.
     static constexpr UINT kRootMeshConstants = 0;
     static constexpr UINT kRootTextures = 1;
+    static constexpr UINT kRootSceneConstants = 2;
     // 셰이더 가시 힙의 칸 수다. t1, t2, t3 순서로 연속해서 둔다.
     static constexpr UINT kTextureCount = 3;
 
