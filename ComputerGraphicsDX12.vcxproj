@@ -85,6 +85,7 @@
     <ClCompile Include="src\FrameResource.cpp" />
     <ClCompile Include="src\Geometry.cpp" />
     <ClCompile Include="src\Mesh.cpp" />
+    <ClCompile Include="src\Pipeline.cpp" />
     <ClCompile Include="src\Texture.cpp" />
     <ClCompile Include="src\Util.cpp" />
     <ClCompile Include="src\Window.cpp" />
@@ -95,6 +96,7 @@
     <ClInclude Include="src\FrameResource.h" />
     <ClInclude Include="src\Geometry.h" />
     <ClInclude Include="src\Mesh.h" />
+    <ClInclude Include="src\Pipeline.h" />
     <ClInclude Include="src\Texture.h" />
     <ClInclude Include="src\Util.h" />
     <ClInclude Include="src\Window.h" />
@@ -119,6 +121,12 @@
       <ShaderType>Vertex</ShaderType>
     </FxCompile>
     <FxCompile Include="shaders\TexturePixelShader.hlsl">
+      <ShaderType>Pixel</ShaderType>
+    </FxCompile>
+    <FxCompile Include="shaders\SkyVertexShader.hlsl">
+      <ShaderType>Vertex</ShaderType>
+    </FxCompile>
+    <FxCompile Include="shaders\SkyPixelShader.hlsl">
       <ShaderType>Pixel</ShaderType>
     </FxCompile>
   </ItemGroup>

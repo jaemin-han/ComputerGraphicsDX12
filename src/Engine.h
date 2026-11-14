@@ -31,9 +31,9 @@ class Engine {
     // CPU가 GPU를 기다리지 않고 앞서 제출할 수 있는 프레임 수다. 스왑체인이
     // 정하는 kBackBufferCount와는 별개다.
     static constexpr UINT kFrameCount = 2;
-    // 한 프레임에 그릴 수 있는 드로우 수다(구 6개와 바닥). 드로우마다 상수
-    // 버퍼 칸을 하나씩 쓴다.
-    static constexpr UINT kMaxDrawsPerFrame = 7;
+    // 한 프레임에 그릴 수 있는 드로우 수다(하늘, 구 6개, 바닥). 드로우마다
+    // 상수 버퍼 칸을 하나씩 쓴다.
+    static constexpr UINT kMaxDrawsPerFrame = 8;
     // 루트 시그니처의 파라미터 번호다. 0은 VS의 b0(루트 CBV), 1은 PS의
     // t1~t3(디스크립터 테이블)이다.
     static constexpr UINT kRootMeshConstants = 0;
@@ -83,7 +83,10 @@ class Engine {
     ComPtr<ID3D12Resource> m_depthBuffer;
 
     ComPtr<ID3D12RootSignature> m_rootSignature;
-    ComPtr<ID3D12PipelineState> m_pipelineState;
+    // 패스별 PSO다. 하늘은 깊이 없이 안쪽 면을, 메시는 깊이 테스트를 하며
+    // 바깥 면을 그린다.
+    ComPtr<ID3D12PipelineState> m_skyPipeline;
+    ComPtr<ID3D12PipelineState> m_meshPipeline;
 
     // 구는 반지름 1인 메시 하나를 드로우마다 모델 행렬로 옮겨 그린다.
     Mesh m_sphere;

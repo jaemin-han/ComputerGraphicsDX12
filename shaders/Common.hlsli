@@ -6,6 +6,13 @@ struct VertexShaderInput
     float2 texcoord : TEXCOORD;
 };
 
+// 하늘 패스의 VS 출력이다. 큐브맵을 읽을 방향만 넘긴다.
+struct SkyPixelShaderInput
+{
+    float4 position : SV_POSITION;
+    float3 direction : TEXCOORD;
+};
+
 struct PixelShaderInput
 {
     float4 position : SV_POSITION;

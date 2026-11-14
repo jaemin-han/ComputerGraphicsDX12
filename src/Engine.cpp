@@ -14,6 +14,7 @@
 #include <stdexcept>
 
 #include "Geometry.h"
+#include "Pipeline.h"
 #include "Util.h"
 #include "Window.h"
 
@@ -337,57 +338,24 @@ void Engine::CreatePipeline() {
                                         IID_PPV_ARGS(&m_rootSignature)),
           "CreateRootSignature");
 
-    const std::vector<char> vertexShader =
-        LoadCompiledShader("MeshVertexShader.cso");
-    const std::vector<char> pixelShader =
-        LoadCompiledShader("TexturePixelShader.cso");
+    // 두 패스가 같은 루트 시그니처를 쓰고, 상태만 다른 PSO를 하나씩 갖는다.
+    // 하늘은 맨 먼저 깊이 없이 그리고, 구 안에서 보므로 안쪽 면(뒷면)을
+    // 남기도록 앞면을 버린다.
+    PipelineSettings sky;
+    sky.vertexShader = "SkyVertexShader.cso";
+    sky.pixelShader = "SkyPixelShader.cso";
+    sky.cullMode = D3D12_CULL_MODE_FRONT;
+    sky.depthEnable = false;
+    m_skyPipeline =
+        CreateGraphicsPipeline(m_device.Get(), m_rootSignature.Get(),
+                               kBackBufferFormat, kDepthFormat, sky);
 
-    const D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
-        {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,
-         offsetof(Vertex, position), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-         0},
-        {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Vertex, normal),
-         D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(Vertex, texcoord),
-         D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-    };
-
-    // 고정 기능 상태는 전부 이 불변 객체 하나에 들어간다.
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
-    desc.pRootSignature = m_rootSignature.Get();
-    desc.VS = {vertexShader.data(), vertexShader.size()};
-    desc.PS = {pixelShader.data(), pixelShader.size()};
-    desc.InputLayout = {inputLayout, _countof(inputLayout)};
-    desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    desc.NumRenderTargets = 1;
-    desc.RTVFormats[0] = kBackBufferFormat;
-    desc.SampleDesc.Count = 1;
-    desc.SampleMask = UINT_MAX;
-
-    desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-    desc.RasterizerState.DepthClipEnable = TRUE;
-
-    // 이미 그린 것보다 가까운 픽셀만 남기고, 남긴 픽셀의 깊이를 기록한다.
-    desc.DepthStencilState.DepthEnable = TRUE;
-    desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
-    desc.DSVFormat = kDepthFormat;
-
-    // 블렌딩은 꺼져 있지만, Direct3D가 불투명으로 취급하는 값을 채운다.
-    D3D12_RENDER_TARGET_BLEND_DESC &blend = desc.BlendState.RenderTarget[0];
-    blend.SrcBlend = D3D12_BLEND_ONE;
-    blend.DestBlend = D3D12_BLEND_ZERO;
-    blend.BlendOp = D3D12_BLEND_OP_ADD;
-    blend.SrcBlendAlpha = D3D12_BLEND_ONE;
-    blend.DestBlendAlpha = D3D12_BLEND_ZERO;
-    blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-    blend.LogicOp = D3D12_LOGIC_OP_NOOP;
-    blend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-    Check(m_device->CreateGraphicsPipelineState(&desc,
-                                                IID_PPV_ARGS(&m_pipelineState)),
-          "CreateGraphicsPipelineState");
+    PipelineSettings mesh;
+    mesh.vertexShader = "MeshVertexShader.cso";
+    mesh.pixelShader = "TexturePixelShader.cso";
+    m_meshPipeline =
+        CreateGraphicsPipeline(m_device.Get(), m_rootSignature.Get(),
+                               kBackBufferFormat, kDepthFormat, mesh);
 }
 
 void Engine::CreateFence() {
@@ -475,9 +443,9 @@ void Engine::Render() {
     WaitForFenceValue(frame.fenceValue);
 
     Check(frame.commandAllocator->Reset(), "ID3D12CommandAllocator::Reset");
-    Check(m_commandList->Reset(frame.commandAllocator.Get(),
-                               m_pipelineState.Get()),
-          "ID3D12GraphicsCommandList::Reset");
+    Check(
+        m_commandList->Reset(frame.commandAllocator.Get(), m_skyPipeline.Get()),
+        "ID3D12GraphicsCommandList::Reset");
 
     ID3D12Resource *backBuffer = m_renderTargets[m_backBufferIndex].Get();
     Transition(backBuffer, D3D12_RESOURCE_STATE_PRESENT,
@@ -529,9 +497,23 @@ void Engine::Render() {
         XMMatrixPerspectiveFovLH(2.0f * std::atan(0.5f / 0.8f),
                                  float(kWidth) / float(kHeight), 0.01f, 100.0f);
 
-    // 구 6개를 먼저, 바닥을 마지막에 그린다. 깊이 테스트가 있어서 그리는
-    // 순서와 상관없이 카메라에 가까운 것이 남는다.
     UINT drawIndex = 0;
+
+    // 하늘: 맨 먼저 깊이 없이 그린다. 커맨드 리스트를 Reset할 때 스카이 PSO로
+    // 시작했다. 뷰에서 이동을 빼서 하늘 구가 늘 카메라 중심에 있게 하면,
+    // 카메라가 움직여도 하늘은 무한히 먼 것처럼 따라온다. 반지름 1 구를 10배로
+    // 키워 near(0.01)와 far(100) 사이에 둔다.
+    XMMATRIX skyView = view;
+    skyView.r[3] = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
+    DrawMesh(frame, drawIndex++, m_sphere,
+             MakeMeshConstants(XMMatrixScaling(10.0f, 10.0f, 10.0f), skyView,
+                               projection));
+
+    // 구 6개를 먼저, 바닥을 마지막에 그린다. 깊이 테스트가 있어서 그리는
+    // 순서와 상관없이 카메라에 가까운 것이 남는다. 하늘은 깊이를 쓰지
+    // 않았으므로 깊이 버퍼는 클리어 값 그대로이고, 이 메시들은 하늘 위에
+    // 덮인다.
+    m_commandList->SetPipelineState(m_meshPipeline.Get());
     for (const SphereDesc &sphere : kSpheres) {
         const XMMATRIX model =
             XMMatrixScaling(sphere.radius, sphere.radius, sphere.radius) *
