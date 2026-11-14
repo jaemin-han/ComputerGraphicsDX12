@@ -34,8 +34,12 @@ class Engine {
     // 한 프레임에 그릴 수 있는 드로우 수다(구 6개와 바닥). 드로우마다 상수
     // 버퍼 칸을 하나씩 쓴다.
     static constexpr UINT kMaxDrawsPerFrame = 7;
-    // 루트 시그니처의 파라미터 번호다.
+    // 루트 시그니처의 파라미터 번호다. 0은 VS의 b0(루트 CBV), 1은 PS의
+    // t1~t3(디스크립터 테이블)이다.
     static constexpr UINT kRootMeshConstants = 0;
+    static constexpr UINT kRootTextures = 1;
+    // 셰이더 가시 힙의 칸 수다. t1, t2, t3 순서로 연속해서 둔다.
+    static constexpr UINT kTextureCount = 3;
 
     void CreateDevice();
     void CreateFrameResources();
@@ -46,6 +50,7 @@ class Engine {
     void CreatePipeline();
     void CreateFence();
     void LoadTextures();
+    void CreateTextureViews();
 
     void Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES before,
                     D3D12_RESOURCE_STATES after);
@@ -84,11 +89,13 @@ class Engine {
     Mesh m_sphere;
     Mesh m_ground;
 
-    // 레이 씬의 t2(하늘과 반사), t1(확산 조명), t3(바닥)이다. 셰이더에 묶는
-    // 일은 다음 단계에서 한다.
+    // 레이 씬의 t2(하늘과 반사), t1(확산 조명), t3(바닥)이다.
     Texture m_environmentMap;
     Texture m_irradianceMap;
     Texture m_groundTexture;
+    // 위 텍스처의 SRV를 담는 셰이더 가시 힙이다. 초기화 때 한 번 쓰고 다시
+    // 쓰지 않으므로 프레임마다 나누지 않는다.
+    ComPtr<ID3D12DescriptorHeap> m_srvHeap;
     // 카메라는 이 시각부터 흐른 시간에 따라 돈다.
     std::chrono::steady_clock::time_point m_startTime;
 

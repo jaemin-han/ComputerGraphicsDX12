@@ -6,7 +6,8 @@
 #include <filesystem>
 #include <vector>
 
-// 기본 힙에 올린 텍스처다. 셰이더에 묶는 SRV는 다음 단계에서 만든다.
+// 기본 힙에 올린 텍스처다. 셰이더가 읽을 view(SRV)는 호출한 쪽이 정한 힙
+// 칸에 CreateShaderResourceView()로 만든다.
 class Texture {
   public:
     // 텍스처 파일(DDS, PNG, JPG)을 읽어 기본 힙에 텍스처를 만들고, 업로드
@@ -18,8 +19,15 @@ class Texture {
          const std::filesystem::path &path,
          std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> &uploadBuffers);
 
+    // destination 칸에 이 텍스처를 읽는 SRV를 쓴다. 큐브맵이면 TextureCube로,
+    // 아니면 Texture2D로 읽게 한다.
+    void
+    CreateShaderResourceView(ID3D12Device *device,
+                             D3D12_CPU_DESCRIPTOR_HANDLE destination) const;
+
     ID3D12Resource *Resource() const { return m_resource.Get(); }
 
   private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_resource;
+    bool m_isCubemap = false;
 };

@@ -118,7 +118,7 @@
     <FxCompile Include="shaders\MeshVertexShader.hlsl">
       <ShaderType>Vertex</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\NormalPixelShader.hlsl">
+    <FxCompile Include="shaders\TexturePixelShader.hlsl">
       <ShaderType>Pixel</ShaderType>
     </FxCompile>
   </ItemGroup>

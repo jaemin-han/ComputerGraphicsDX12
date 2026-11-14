@@ -54,6 +54,7 @@ Texture Texture::Load(ID3D12Device *device,
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;
 
     Texture texture;
+    texture.m_isCubemap = metadata.IsCubemap();
     Check(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
                                           D3D12_RESOURCE_STATE_COPY_DEST,
                                           nullptr,
@@ -117,4 +118,22 @@ Texture Texture::Load(ID3D12Device *device,
 
     uploadBuffers.push_back(upload);
     return texture;
+}
+
+void Texture::CreateShaderResourceView(
+    ID3D12Device *device, D3D12_CPU_DESCRIPTOR_HANDLE destination) const {
+    const D3D12_RESOURCE_DESC resourceDesc = m_resource->GetDesc();
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+    desc.Format = resourceDesc.Format;
+    desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    if (m_isCubemap) {
+        // 면 6장짜리 배열을 셰이더가 방향 벡터로 읽는 큐브로 보게 한다.
+        desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+        desc.TextureCube.MipLevels = resourceDesc.MipLevels;
+    } else {
+        desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        desc.Texture2D.MipLevels = resourceDesc.MipLevels;
+    }
+    device->CreateShaderResourceView(m_resource.Get(), &desc, destination);
 }

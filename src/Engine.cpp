@@ -91,6 +91,7 @@ void Engine::Initialize() {
     m_sphere = Mesh::Create(m_device.Get(), MakeSphere(1.0f, 96, 64));
     m_ground = Mesh::Create(m_device.Get(), MakeSquare());
     LoadTextures();
+    CreateTextureViews();
 
     m_startTime = std::chrono::steady_clock::now();
 }
@@ -272,19 +273,52 @@ void Engine::CreateDepthBuffer() {
 }
 
 void Engine::CreatePipeline() {
-    // 루트 시그니처는 셰이더가 받는 인자 목록이다. 지금은 VS의 b0 하나다.
-    // b0는 드로우마다 바뀌므로, 디스크립터를 거치지 않고 GPU 주소를 바로
-    // 넘기는 루트 CBV로 둔다.
-    D3D12_ROOT_PARAMETER rootParameters[1] = {};
+    // 루트 시그니처는 셰이더가 받는 인자 목록이다.
+    D3D12_ROOT_PARAMETER rootParameters[2] = {};
+
+    // 0: VS의 b0. 드로우마다 바뀌므로, 디스크립터를 거치지 않고 GPU 주소를
+    // 바로 넘기는 루트 CBV로 둔다.
     D3D12_ROOT_PARAMETER &meshConstants = rootParameters[kRootMeshConstants];
     meshConstants.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     meshConstants.Descriptor.ShaderRegister = 0; // b0
     meshConstants.Descriptor.RegisterSpace = 0;
     meshConstants.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
+    // 1: PS의 t1~t3. 텍스처는 view가 있어야 읽을 수 있으므로 힙의 칸을
+    // 가리키는 디스크립터 테이블로 둔다. 모든 드로우가 같은 세 장을 쓰므로
+    // 연속 3칸을 테이블 하나로 묶는다.
+    D3D12_DESCRIPTOR_RANGE textureRange = {};
+    textureRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    textureRange.NumDescriptors = kTextureCount;
+    textureRange.BaseShaderRegister = 1; // t1
+    textureRange.RegisterSpace = 0;
+    textureRange.OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_ROOT_PARAMETER &textures = rootParameters[kRootTextures];
+    textures.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    textures.DescriptorTable.NumDescriptorRanges = 1;
+    textures.DescriptorTable.pDescriptorRanges = &textureRange;
+    textures.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // s0: 바꿀 일이 없는 샘플러라 루트 시그니처에 정적 샘플러로 넣는다.
+    // 샘플러 힙과 바인딩 호출이 필요 없다.
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.MaxAnisotropy = 1;
+    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0; // s0
+    sampler.RegisterSpace = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
     D3D12_ROOT_SIGNATURE_DESC rootDesc = {};
     rootDesc.NumParameters = _countof(rootParameters);
     rootDesc.pParameters = rootParameters;
+    rootDesc.NumStaticSamplers = 1;
+    rootDesc.pStaticSamplers = &sampler;
     rootDesc.Flags =
         D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
@@ -306,7 +340,7 @@ void Engine::CreatePipeline() {
     const std::vector<char> vertexShader =
         LoadCompiledShader("MeshVertexShader.cso");
     const std::vector<char> pixelShader =
-        LoadCompiledShader("NormalPixelShader.cso");
+        LoadCompiledShader("TexturePixelShader.cso");
 
     const D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,
@@ -397,6 +431,32 @@ void Engine::LoadTextures() {
     WaitForGpu();
 }
 
+void Engine::CreateTextureViews() {
+    // 셰이더가 실행 중에 읽는 칸이라 SHADER_VISIBLE 힙이어야 한다. RTV, DSV
+    // 힙과 달리 GPU 핸들로도 가리킬 수 있다.
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+    heapDesc.NumDescriptors = kTextureCount;
+    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    Check(m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_srvHeap)),
+          "CreateDescriptorHeap");
+
+    // 테이블이 t1부터 연속 3칸을 읽으므로 레지스터 순서대로 칸을 채운다.
+    const UINT descriptorSize = m_device->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_CPU_DESCRIPTOR_HANDLE handle =
+        m_srvHeap->GetCPUDescriptorHandleForHeapStart();
+    const Texture *textures[kTextureCount] = {
+        &m_irradianceMap,  // t1
+        &m_environmentMap, // t2
+        &m_groundTexture,  // t3
+    };
+    for (const Texture *texture : textures) {
+        texture->CreateShaderResourceView(m_device.Get(), handle);
+        handle.ptr += descriptorSize;
+    }
+}
+
 void Engine::Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES before,
                         D3D12_RESOURCE_STATES after) {
     D3D12_RESOURCE_BARRIER barrier = {};
@@ -446,6 +506,13 @@ void Engine::Render() {
     m_commandList->RSSetScissorRects(1, &scissor);
 
     m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
+
+    // 텍스처 테이블은 모든 드로우가 같으므로 프레임마다 한 번만 설정한다.
+    // 테이블은 묶인 셰이더 가시 힙 안의 칸을 가리키므로 힙을 먼저 묶는다.
+    ID3D12DescriptorHeap *heaps[] = {m_srvHeap.Get()};
+    m_commandList->SetDescriptorHeaps(1, heaps);
+    m_commandList->SetGraphicsRootDescriptorTable(
+        kRootTextures, m_srvHeap->GetGPUDescriptorHandleForHeapStart());
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
     // 카메라는 Part 2 레이 씬처럼 바닥 중심 둘레를 돈다.
