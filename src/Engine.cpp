@@ -45,9 +45,6 @@ MeshConstants MakeMeshConstants(FXMMATRIX model, CXMMATRIX view,
     return constants;
 }
 
-static_assert(sizeof(MeshConstants) <= FrameResource::kConstantSlotSize,
-              "MeshConstants must fit in one constant buffer slot.");
-
 // Part 2 레이 씬의 구 배치다. 색, 반사, 굴절 값은 레이 PS를 넣을 때 더한다.
 struct SphereDesc {
     XMFLOAT3 center;
@@ -161,10 +158,10 @@ void Engine::CreateDevice() {
 }
 
 void Engine::CreateFrameResources() {
-    // GPU가 이전 프레임의 할당자와 상수 칸을 아직 쓰고 있을 수 있으므로
+    // GPU가 이전 프레임의 할당자와 상수 버퍼를 아직 쓰고 있을 수 있으므로
     // 프레임마다 따로 둔다.
     for (FrameResource &frame : m_frames)
-        frame.Create(m_device.Get(), kMaxDrawsPerFrame);
+        frame.Create(m_device.Get(), kConstantBufferSize);
 }
 
 void Engine::CreateCommandObjects() {
@@ -438,9 +435,10 @@ void Engine::Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES before,
 
 void Engine::Render() {
     // 이 칸은 kFrameCount 프레임 전에 마지막으로 제출됐다. GPU가 그 제출을
-    // 지나간 뒤에야 할당자를 다시 쓸 수 있다.
+    // 지나간 뒤에야 할당자와 상수 버퍼를 다시 쓸 수 있다.
     FrameResource &frame = m_frames[m_frameIndex];
     WaitForFenceValue(frame.fenceValue);
+    frame.ResetConstants();
 
     Check(frame.commandAllocator->Reset(), "ID3D12CommandAllocator::Reset");
     Check(
@@ -497,15 +495,13 @@ void Engine::Render() {
         XMMatrixPerspectiveFovLH(2.0f * std::atan(0.5f / 0.8f),
                                  float(kWidth) / float(kHeight), 0.01f, 100.0f);
 
-    UINT drawIndex = 0;
-
     // 하늘: 맨 먼저 깊이 없이 그린다. 커맨드 리스트를 Reset할 때 스카이 PSO로
     // 시작했다. 뷰에서 이동을 빼서 하늘 구가 늘 카메라 중심에 있게 하면,
     // 카메라가 움직여도 하늘은 무한히 먼 것처럼 따라온다. 반지름 1 구를 10배로
     // 키워 near(0.01)와 far(100) 사이에 둔다.
     XMMATRIX skyView = view;
     skyView.r[3] = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
-    DrawMesh(frame, drawIndex++, m_sphere,
+    DrawMesh(frame, m_sphere,
              MakeMeshConstants(XMMatrixScaling(10.0f, 10.0f, 10.0f), skyView,
                                projection));
 
@@ -519,8 +515,7 @@ void Engine::Render() {
             XMMatrixScaling(sphere.radius, sphere.radius, sphere.radius) *
             XMMatrixTranslation(sphere.center.x, sphere.center.y,
                                 sphere.center.z);
-        DrawMesh(frame, drawIndex++, m_sphere,
-                 MakeMeshConstants(model, view, projection));
+        DrawMesh(frame, m_sphere, MakeMeshConstants(model, view, projection));
     }
 
     // 정사각형은 -z를 향하므로 x축으로 90도 돌려 위를 향하게 눕힌다.
@@ -529,8 +524,7 @@ void Engine::Render() {
                         kGroundHalfExtent) *
         XMMatrixRotationX(XM_PIDIV2) *
         XMMatrixTranslation(kGroundCenter.x, kGroundCenter.y, kGroundCenter.z);
-    DrawMesh(frame, drawIndex++, m_ground,
-             MakeMeshConstants(groundModel, view, projection));
+    DrawMesh(frame, m_ground, MakeMeshConstants(groundModel, view, projection));
 
     Transition(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET,
                D3D12_RESOURCE_STATE_PRESENT);
@@ -547,12 +541,12 @@ void Engine::Render() {
     m_frameIndex = (m_frameIndex + 1) % kFrameCount;
 }
 
-void Engine::DrawMesh(FrameResource &frame, UINT drawIndex, const Mesh &mesh,
+void Engine::DrawMesh(FrameResource &frame, const Mesh &mesh,
                       const MeshConstants &constants) {
-    // 칸에 쓰는 일은 프레임 자원이, 그 주소를 b0에 연결하는 일은 루트
+    // 상수를 버퍼에 쓰는 일은 프레임 자원이, 그 주소를 b0에 연결하는 일은 루트
     // 시그니처를 가진 엔진이, 그리기는 메시가 한다.
     const D3D12_GPU_VIRTUAL_ADDRESS address =
-        frame.WriteConstants(drawIndex, &constants, sizeof(constants));
+        frame.WriteConstants(&constants, sizeof(constants));
     m_commandList->SetGraphicsRootConstantBufferView(kRootMeshConstants,
                                                      address);
     mesh.Draw(m_commandList.Get());

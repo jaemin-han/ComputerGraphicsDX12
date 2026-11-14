@@ -31,9 +31,10 @@ class Engine {
     // CPU가 GPU를 기다리지 않고 앞서 제출할 수 있는 프레임 수다. 스왑체인이
     // 정하는 kBackBufferCount와는 별개다.
     static constexpr UINT kFrameCount = 2;
-    // 한 프레임에 그릴 수 있는 드로우 수다(하늘, 구 6개, 바닥). 드로우마다
-    // 상수 버퍼 칸을 하나씩 쓴다.
-    static constexpr UINT kMaxDrawsPerFrame = 8;
+    // 프레임마다 상수를 쓰는 업로드 버퍼 크기다. 지금은 드로우 8개(하늘, 구
+    // 6개, 바닥)가 256바이트씩 2KB를 쓴다. 넘치면 WriteConstants가 예외를
+    // 던지므로 여유 있게 잡는다.
+    static constexpr UINT64 kConstantBufferSize = 64 * 1024;
     // 루트 시그니처의 파라미터 번호다. 0은 VS의 b0(루트 CBV), 1은 PS의
     // t1~t3(디스크립터 테이블)이다.
     static constexpr UINT kRootMeshConstants = 0;
@@ -55,7 +56,7 @@ class Engine {
     void Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES before,
                     D3D12_RESOURCE_STATES after);
     void Render();
-    void DrawMesh(FrameResource &frame, UINT drawIndex, const Mesh &mesh,
+    void DrawMesh(FrameResource &frame, const Mesh &mesh,
                   const MeshConstants &constants);
 
     UINT64 Signal();
