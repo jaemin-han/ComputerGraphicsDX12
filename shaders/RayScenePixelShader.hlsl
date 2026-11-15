@@ -11,6 +11,11 @@ SamplerState linearWrapSampler : register(s0);
 // C++의 kSphereCount와 같아야 한다. 바닥은 구 다음 번호를 쓴다.
 static const int SphereCount = 6;
 static const int Ground = SphereCount;
+// 광선이 아무것도 맞히지 않았다는 뜻이다. C++의 kNoObjectIndex와 같다.
+static const int NoObject = -1;
+// 표면에서 새 광선을 쏠 때 노멀 쪽으로 띄우는 거리다. 출발한 표면에 다시
+// 맞는 것(자기 그림자)을 막는다.
+static const float RayBias = 1e-3f;
 
 // C++의 Surface, Sphere와 같은 배치다.
 struct Surface
@@ -63,6 +68,104 @@ Surface GetSurface(int index, float3 position)
     return surface;
 }
 
+struct Ray
+{
+    float3 start;
+    float3 direction; // 정규화된 방향이다.
+};
+
+// 광선이 맞힌 물체와 그 지점이다. 아무것도 맞히지 않으면 objectIndex가
+// NoObject다.
+struct Hit
+{
+    int objectIndex;
+    float distance;
+    float3 position;
+    float3 normal;
+};
+
+// 광선 start + d * direction이 구와 만나는 가장 가까운 앞쪽 거리 d를
+// 돌려준다. 만나지 않으면 음수다. Part 1 Sphere::CheckRayCollision과 같은 근의
+// 공식이다. 출발점이 구 안이면 앞쪽 근(d2)을 쓴다(4단계 굴절 광선).
+float IntersectSphere(Ray ray, Sphere sphere)
+{
+    float3 fromCenter = ray.start - sphere.center;
+    float b = 2.0f * dot(ray.direction, fromCenter);
+    float c = dot(fromCenter, fromCenter) - sphere.radius * sphere.radius;
+    float det = b * b - 4.0f * c;
+
+    // FXC는 중간에 return이 있으면 오탐 경고(X4000)를 내므로 반환을 하나로
+    // 모은다.
+    float d = -1.0f;
+    if (det >= 0.0f)
+    {
+        float d1 = (-b - sqrt(det)) * 0.5f;
+        float d2 = (-b + sqrt(det)) * 0.5f;
+        d = d1 > 0.0f ? d1 : d2;
+    }
+    return d;
+}
+
+// 바닥은 높이 groundCenter.y에 수평으로 누운, x와 z로 groundHalfExtent만큼
+// 뻗은 사각형이다. 평면과 직선의 교점을 이 경우에 맞춰 푼다. 노멀이 y축이라
+// 거리는 y 성분만으로 정해지고, 안쪽 판정은 x, z 범위 검사가 된다.
+float IntersectGround(Ray ray)
+{
+    // 바닥과 나란한 광선은 만나지 않는다. 0으로 나누는 것도 막는다.
+    float d = -1.0f;
+    if (abs(ray.direction.y) > 1e-6f)
+    {
+        d = (groundCenter.y - ray.start.y) / ray.direction.y;
+        float3 position = ray.start + d * ray.direction;
+        float2 offset = abs(position.xz - groundCenter.xz);
+        if (offset.x > groundHalfExtent || offset.y > groundHalfExtent)
+            d = -1.0f;
+    }
+    return d;
+}
+
+// 광선이 장면에서 가장 먼저 맞히는 물체를 찾는다. Part 1
+// FindClosestCollision과 같은 일이다. HLSL에는 가상 함수가 없으므로 물체
+// 종류마다 교차 함수를 부르고, 물체 목록은 b1의 배열이다.
+Hit TraceScene(Ray ray)
+{
+    Hit hit = (Hit)0;
+    hit.objectIndex = NoObject;
+    hit.distance = 1e30f;
+
+    for (int i = 0; i < SphereCount; ++i)
+    {
+        float d = IntersectSphere(ray, spheres[i]);
+        if (d > 0.0f && d < hit.distance)
+        {
+            hit.objectIndex = i;
+            hit.distance = d;
+        }
+    }
+
+    float d = IntersectGround(ray);
+    if (d > 0.0f && d < hit.distance)
+    {
+        hit.objectIndex = Ground;
+        hit.distance = d;
+    }
+
+    hit.position = ray.start + hit.distance * ray.direction;
+    if (hit.objectIndex == Ground)
+        hit.normal = float3(0.0f, 1.0f, 0.0f);
+    else if (hit.objectIndex != NoObject)
+        hit.normal = normalize(hit.position - spheres[hit.objectIndex].center);
+    return hit;
+}
+
+// 해까지 가는 길이 열려 있는지 본다. 해는 무한히 멀리 있으므로 앞쪽에
+// 무엇이든 맞으면 가려진 것이다(Part 1 점광원의 거리 조건이 필요 없다).
+bool IsLit(float3 position, float3 normal, float3 toLight)
+{
+    Ray shadowRay = {position + normal * RayBias, toLight};
+    return TraceScene(shadowRay).objectIndex == NoObject;
+}
+
 // 한 점이 받는 빛을 해(Phong)와 하늘(diffuse IBL)로 나눠 더한다. 비율
 // 0.35, 0.65, 0.35는 Part 2 값이고 보기 좋게 맞춘 튜닝 값이다.
 float3 ShadeSurface(float3 position, float3 normal, Surface surface)
@@ -72,22 +175,33 @@ float3 ShadeSurface(float3 position, float3 normal, Surface surface)
 
     // ambient 자리: 상수 대신 노멀 둘레 반구에서 들어온 하늘빛을 읽는다.
     // 무광 표면의 밝기는 보는 방향과 상관없으므로 노멀로만 읽는다. 내적
-    // 가중은 이 큐브맵에 이미 들어 있다.
+    // 가중은 이 큐브맵에 이미 들어 있다. 하늘빛은 사방에서 오므로 해가
+    // 가려져도 남긴다.
     float3 irradiance =
         irradianceMap.SampleLevel(linearWrapSampler, normal, 0).rgb;
     float3 color = 0.35f * irradiance * surface.color;
 
-    // diffuse: 해에서 온 빛의 양에 재질 색(반사 비율)을 곱한다.
+    // 해를 등진 면에는 그림자 광선을 쏘지 않는다. HLSL의 &&는 양쪽을 모두
+    // 계산하므로(단락 평가가 없다) 비싼 IsLit은 if를 나눠 안쪽에 둔다.
     float diffuse = saturate(dot(normal, toLight));
-    color += 0.65f * diffuse * surface.color;
-
-    // specular: 표면에서 바로 튕긴 빛이라 재질 색을 곱하지 않는다(흰 하이라이트).
-    // 해가 비추는 면에만 생긴다. shininess가 0이면 pow가 어디서나 1이 되므로
-    // 하이라이트가 없는 재질로 본다.
-    if (diffuse > 0.0f && surface.shininess > 0.0f)
+    if (diffuse > 0.0f)
     {
-        float highlight = saturate(dot(reflect(-toLight, normal), toEye));
-        color += 0.35f * pow(highlight, surface.shininess);
+        // 해가 가려지면 해에서 오는 diffuse와 specular를 모두 끈다.
+        if (IsLit(position, normal, toLight))
+        {
+            // diffuse: 해에서 온 빛의 양에 재질 색(반사 비율)을 곱한다.
+            color += 0.65f * diffuse * surface.color;
+
+            // specular: 표면에서 바로 튕긴 빛이라 재질 색을 곱하지 않는다
+            // (흰 하이라이트). shininess가 0이면 pow가 어디서나 1이 되므로
+            // 하이라이트가 없는 재질로 본다.
+            if (surface.shininess > 0.0f)
+            {
+                float highlight =
+                    saturate(dot(reflect(-toLight, normal), toEye));
+                color += 0.35f * pow(highlight, surface.shininess);
+            }
+        }
     }
     return color;
 }
