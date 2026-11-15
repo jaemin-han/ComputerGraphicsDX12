@@ -45,10 +45,13 @@ struct SceneConstants {
     DirectX::XMFLOAT3 eyeWorld;
     float groundHalfExtent;
     DirectX::XMFLOAT3 groundCenter;
-    float padding;
+    float padding0;
+    // 해(방향광)의 빛이 나아가는 방향이다. 정규화해서 넣는다.
+    DirectX::XMFLOAT3 lightDirection;
+    float padding1;
     Sphere spheres[kSphereCount];
 };
 
 static_assert(sizeof(MeshConstants) == 17 * 16, "Must match HLSL b0.");
 static_assert(sizeof(Sphere) == 3 * 16, "Must match HLSL Sphere.");
-static_assert(sizeof(SceneConstants) == 20 * 16, "Must match HLSL b1.");
+static_assert(sizeof(SceneConstants) == 21 * 16, "Must match HLSL b1.");

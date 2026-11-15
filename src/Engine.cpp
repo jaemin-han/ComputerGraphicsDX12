@@ -516,6 +516,11 @@ void Engine::Render() {
     XMStoreFloat3(&scene.eyeWorld, eye);
     scene.groundHalfExtent = kGroundHalfExtent;
     scene.groundCenter = kGroundCenter;
+    // 해는 Part 2처럼 아래를 향한 채 수평으로 돈다.
+    const float lightAngle = 0.7f * time;
+    XMStoreFloat3(&scene.lightDirection,
+                  XMVector3Normalize(XMVectorSet(std::sin(lightAngle), -1.0f,
+                                                 std::cos(lightAngle), 0.0f)));
     for (int i = 0; i < kSphereCount; ++i)
         scene.spheres[i] = kSpheres[i];
     m_commandList->SetGraphicsRootConstantBufferView(
