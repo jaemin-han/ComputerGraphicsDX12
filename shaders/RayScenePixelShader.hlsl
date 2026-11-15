@@ -167,11 +167,13 @@ bool IsLit(float3 position, float3 normal, float3 toLight)
 }
 
 // 한 점이 받는 빛을 해(Phong)와 하늘(diffuse IBL)로 나눠 더한다. 비율
-// 0.35, 0.65, 0.35는 Part 2 값이고 보기 좋게 맞춘 튜닝 값이다.
-float3 ShadeSurface(float3 position, float3 normal, Surface surface)
+// 0.35, 0.65, 0.35는 Part 2 값이고 보기 좋게 맞춘 튜닝 값이다. toEye는 이
+// 점을 보는 광선의 출발점 쪽 방향이다. 1차 교차점에서는 카메라 쪽이고,
+// 반사 광선이 맞힌 점에서는 -ray.direction이다.
+float3 ShadeSurface(float3 position, float3 normal, float3 toEye,
+                    Surface surface)
 {
     float3 toLight = -lightDirection;
-    float3 toEye = normalize(eyeWorld - position);
 
     // ambient 자리: 상수 대신 노멀 둘레 반구에서 들어온 하늘빛을 읽는다.
     // 무광 표면의 밝기는 보는 방향과 상관없으므로 노멀로만 읽는다. 내적
@@ -206,9 +208,38 @@ float3 ShadeSurface(float3 position, float3 normal, Surface surface)
     return color;
 }
 
-// 1단계: 래스터가 찾은 1차 교차점을 로컬 셰이딩한다. 이 PS가 실행됐다는 것은
-// 깊이 테스트를 통과했다는 것, 곧 이 픽셀에서 눈에서 나간 광선이 처음 맞은
-// 물체가 objectIndex라는 뜻이다.
+// 반사율을 보는 각도의 함수로 구한다(Schlick 근사, Part 2
+// 08_ShaderToys_Step5의 SchlickFresnel과 같다). 정면에서 보면 재질 고유값
+// f0이고, 스치듯 볼수록 1로 간다. 5제곱이라 가장자리에서만 크게 오른다.
+float Fresnel(float f0, float3 normal, float3 toEye)
+{
+    float cosTheta = saturate(dot(normal, toEye));
+    return f0 + (1.0f - f0) * pow(1.0f - cosTheta, 5.0f);
+}
+
+// 광선이 출발점으로 가져오는 빛이다. 맞힌 점은 로컬 셰이딩까지만 하고, 그
+// 점에서 다시 반사하는 것은 4단계 광선 스택에서 다룬다. 아무것도 맞히지
+// 않으면 그 방향의 하늘(t2)이다.
+float3 TraceColor(Ray ray)
+{
+    Hit hit = TraceScene(ray);
+    float3 color = 0.0f;
+    if (hit.objectIndex == NoObject)
+    {
+        color = environmentMap.SampleLevel(linearWrapSampler, ray.direction, 0)
+                    .rgb;
+    }
+    else
+    {
+        Surface surface = GetSurface(hit.objectIndex, hit.position);
+        color = ShadeSurface(hit.position, hit.normal, -ray.direction, surface);
+    }
+    return color;
+}
+
+// 3단계: 래스터가 찾은 1차 교차점을 로컬 셰이딩하고 반사를 한 번 더한다. 이
+// PS가 실행됐다는 것은 깊이 테스트를 통과했다는 것, 곧 이 픽셀에서 눈에서
+// 나간 광선이 처음 맞은 물체가 objectIndex라는 뜻이다.
 float4 main(PixelShaderInput input) : SV_TARGET
 {
     float3 position = input.posWorld;
@@ -223,5 +254,19 @@ float4 main(PixelShaderInput input) : SV_TARGET
     }
 
     Surface surface = GetSurface(objectIndex, position);
-    return float4(ShadeSurface(position, normal, surface), 1.0f);
+    float3 toEye = normalize(eyeWorld - position);
+    float3 color = ShadeSurface(position, normal, toEye, surface);
+
+    // 반사율만큼 로컬 셰이딩을 반사 광선의 빛으로 바꾼다(Part 1 Step 12에서
+    // 상수였던 비율을 Fresnel로 구한다). reflectivity는 정면 반사율 f0이다.
+    // f0이 0이어도 가장자리는 반사하므로 재질이 아니라 실제 비율로 거르고,
+    // 무시할 만큼 작으면 반사 광선을 쏘지 않는다.
+    float reflection = Fresnel(surface.reflectivity, normal, toEye);
+    if (reflection > 0.01f)
+    {
+        Ray reflectionRay = {position + normal * RayBias,
+                             reflect(-toEye, normal)};
+        color = lerp(color, TraceColor(reflectionRay), reflection);
+    }
+    return float4(color, 1.0f);
 }
