@@ -497,9 +497,11 @@ void Engine::Render() {
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
     // 카메라는 Part 2 레이 씬처럼 바닥 중심 둘레를 돈다.
-    const float time = std::chrono::duration<float>(
-                           std::chrono::steady_clock::now() - m_startTime)
-                           .count();
+    const float time = m_frozenTime
+                           ? *m_frozenTime
+                           : std::chrono::duration<float>(
+                                 std::chrono::steady_clock::now() - m_startTime)
+                                 .count();
     const float angle = 0.6f * time;
     const XMVECTOR eye = XMVectorSet(6.0f * std::sin(angle), 2.0f,
                                      5.0f - 6.0f * std::cos(angle), 1.0f);

@@ -7,6 +7,7 @@
 #include <wrl/client.h>
 
 #include <chrono>
+#include <optional>
 
 #include "ConstantBuffers.h"
 #include "FrameResource.h"
@@ -23,6 +24,9 @@ class Engine {
 
     void Initialize();
     int Run();
+    // 카메라와 해를 이 시각(초)에 멈춘다. Part 2 실행 결과와 같은 시각으로
+    // 맞춰 비교할 때 쓴다.
+    void FreezeTime(float seconds) { m_frozenTime = seconds; }
 
   private:
     static constexpr UINT kWidth = 1280;
@@ -103,6 +107,8 @@ class Engine {
     ComPtr<ID3D12DescriptorHeap> m_srvHeap;
     // 카메라는 이 시각부터 흐른 시간에 따라 돈다.
     std::chrono::steady_clock::time_point m_startTime;
+    // 값이 있으면 흐른 시간 대신 이 시각을 쓴다.
+    std::optional<float> m_frozenTime;
 
     ComPtr<ID3D12Fence> m_fence;
     // 마지막으로 Signal()에 넘긴 값이다. 각 프레임은 자기 값을
