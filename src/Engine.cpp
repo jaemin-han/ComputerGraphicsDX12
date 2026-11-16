@@ -6,6 +6,7 @@
 
 #include <d3d12sdklayers.h>
 
+#include <algorithm>
 #include <climits>
 #include <cmath>
 #include <cstddef>
@@ -107,6 +108,7 @@ void Engine::Initialize() {
     InitializeGui();
 
     m_startTime = std::chrono::steady_clock::now();
+    m_lastFrameTime = m_startTime;
 }
 
 int Engine::Run() {
@@ -515,8 +517,8 @@ void Engine::BuildGui() {
     const ImGuiIO &io = ImGui::GetIO();
     ImGui::Text("%.1f FPS (%.2f ms)", io.Framerate, 1000.0f / io.Framerate);
 
-    // 멈춘 시각을 바꿔 가며 정답 화면과 같은 장면을 찾는다. 다시 흐르게 하면
-    // 멈춘 시각에서 이어 간다.
+    // 장면 시각은 해의 방향을 정한다. 멈춘 시각을 바꿔 가며 조명을 맞추고,
+    // 다시 흐르게 하면 멈춘 시각에서 이어 간다.
     bool frozen = m_frozenTime.has_value();
     float time = SceneTime();
     if (ImGui::Checkbox("Freeze time", &frozen)) {
@@ -534,9 +536,64 @@ void Engine::BuildGui() {
         ImGui::SliderFloat("Time (s)", &*m_frozenTime, 0.0f, 30.0f, "%.2f");
     else
         ImGui::Text("Time %.2f s", time);
+
+    ImGui::Separator();
+    XMFLOAT3 position;
+    XMStoreFloat3(&position, m_camera.Position());
+    ImGui::Text("Position %.2f %.2f %.2f", position.x, position.y, position.z);
+    ImGui::Text("Yaw %.1f  Pitch %.1f", XMConvertToDegrees(m_camera.Yaw()),
+                XMConvertToDegrees(m_camera.Pitch()));
+    ImGui::TextDisabled("Hold RMB to look, WASD/QE to move, Shift: fast");
     ImGui::End();
 
     ImGui::Render();
+}
+
+void Engine::UpdateCamera(float deltaSeconds) {
+    // 마우스 1픽셀에 도는 각도(라디안)와 초당 이동 거리다.
+    constexpr float kLookSensitivity = 0.003f;
+    constexpr float kMoveSpeed = 2.0f;
+    constexpr float kFastMultiplier = 3.0f;
+
+    const ImGuiIO &io = ImGui::GetIO();
+
+    // 오른쪽 버튼을 ImGui 창 밖에서 눌렀을 때만 둘러보기를 시작한다. 커서를
+    // 숨기고 누른 자리에 붙잡아 두어, 화면 끝에 닿아도 계속 돌 수 있게 한다.
+    if (!m_mouseLook && ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
+        !io.WantCaptureMouse) {
+        GetCursorPos(&m_mouseLookAnchor);
+        SetCapture(m_window);
+        ShowCursor(FALSE);
+        m_mouseLook = true;
+    }
+    if (m_mouseLook) {
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+            ReleaseCapture();
+            ShowCursor(TRUE);
+            m_mouseLook = false;
+        } else {
+            POINT cursor;
+            GetCursorPos(&cursor);
+            SetCursorPos(m_mouseLookAnchor.x, m_mouseLookAnchor.y);
+            // 화면 y는 아래로 커지고 pitch > 0은 숙이는 쪽이라 부호가 같다.
+            m_camera.Rotate(
+                float(cursor.x - m_mouseLookAnchor.x) * kLookSensitivity,
+                float(cursor.y - m_mouseLookAnchor.y) * kLookSensitivity);
+        }
+    }
+
+    if (io.WantCaptureKeyboard)
+        return;
+    const auto axis = [](ImGuiKey positive, ImGuiKey negative) {
+        return float(ImGui::IsKeyDown(positive)) -
+               float(ImGui::IsKeyDown(negative));
+    };
+    float distance = kMoveSpeed * deltaSeconds;
+    if (ImGui::IsKeyDown(ImGuiMod_Shift))
+        distance *= kFastMultiplier;
+    m_camera.Move(axis(ImGuiKey_W, ImGuiKey_S) * distance,
+                  axis(ImGuiKey_D, ImGuiKey_A) * distance,
+                  axis(ImGuiKey_E, ImGuiKey_Q) * distance);
 }
 
 float Engine::SceneTime() const {
@@ -559,9 +616,16 @@ void Engine::Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES before,
 }
 
 void Engine::Render() {
-    // UI는 CPU 쪽 일이라 펜스 대기와 상관없다. 체크박스가 장면 시각을 바꾸므로
-    // 장면을 기록하기 전에 만든다.
+    // UI와 입력은 CPU 쪽 일이라 펜스 대기와 상관없다. 체크박스와 입력이 장면
+    // 시각과 카메라를 바꾸므로 장면을 기록하기 전에 처리한다.
+    const auto now = std::chrono::steady_clock::now();
+    // 창을 끌고 있던 동안처럼 프레임이 오래 멈췄다면 한 번에 멀리 가지 않게
+    // 자른다.
+    const float deltaSeconds = std::min(
+        std::chrono::duration<float>(now - m_lastFrameTime).count(), 0.1f);
+    m_lastFrameTime = now;
     BuildGui();
+    UpdateCamera(deltaSeconds);
 
     // 이 칸은 kFrameCount 프레임 전에 마지막으로 제출됐다. GPU가 그 제출을
     // 지나간 뒤에야 할당자와 상수 버퍼를 다시 쓸 수 있다.
@@ -610,14 +674,9 @@ void Engine::Render() {
         kRootTextures, m_srvHeap->GetGPUDescriptorHandleForHeapStart());
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    // 카메라는 Part 2 레이 씬처럼 바닥 중심 둘레를 돈다.
     const float time = SceneTime();
-    const float angle = 0.6f * time;
-    const XMVECTOR eye = XMVectorSet(6.0f * std::sin(angle), 2.0f,
-                                     5.0f - 6.0f * std::cos(angle), 1.0f);
-    const XMMATRIX view =
-        XMMatrixLookAtLH(eye, XMVectorSet(0.0f, 0.8f, 5.0f, 1.0f),
-                         XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
+    const XMVECTOR eye = m_camera.Position();
+    const XMMATRIX view = m_camera.View();
     const XMMATRIX projection =
         XMMatrixPerspectiveFovLH(2.0f * std::atan(0.5f / 0.8f),
                                  float(kWidth) / float(kHeight), 0.01f, 100.0f);

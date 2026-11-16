@@ -81,6 +81,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\Camera.cpp" />
     <ClCompile Include="src\Engine.cpp" />
     <ClCompile Include="src\FrameResource.cpp" />
     <ClCompile Include="src\Geometry.cpp" />
@@ -91,6 +92,7 @@
     <ClCompile Include="src\Window.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\Camera.h" />
     <ClInclude Include="src\ConstantBuffers.h" />
     <ClInclude Include="src\Engine.h" />
     <ClInclude Include="src\FrameResource.h" />

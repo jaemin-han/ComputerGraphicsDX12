@@ -7,8 +7,10 @@
 #include <wrl/client.h>
 
 #include <chrono>
+#include <cmath>
 #include <optional>
 
+#include "Camera.h"
 #include "ConstantBuffers.h"
 #include "FrameResource.h"
 #include "Mesh.h"
@@ -24,8 +26,7 @@ class Engine {
 
     void Initialize();
     int Run();
-    // 카메라와 해를 이 시각(초)에 멈춘다. Part 2 실행 결과와 같은 시각으로
-    // 맞춰 비교할 때 쓴다.
+    // 해를 이 시각(초)의 방향에 멈춘다. 같은 조명으로 화면을 비교할 때 쓴다.
     void FreezeTime(float seconds) { m_frozenTime = seconds; }
 
   private:
@@ -69,6 +70,9 @@ class Engine {
     void BuildGui();
     // 카메라와 해가 쓰는 장면 시각(초)이다.
     float SceneTime() const;
+    // 마우스(오른쪽 버튼을 누른 동안)와 키보드 입력으로 1인칭 카메라를
+    // 움직인다. ImGui가 입력을 받은 뒤에 부른다.
+    void UpdateCamera(float deltaSeconds);
 
     void Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES before,
                     D3D12_RESOURCE_STATES after);
@@ -126,6 +130,15 @@ class Engine {
     std::chrono::steady_clock::time_point m_startTime;
     // 값이 있으면 흐른 시간 대신 이 시각을 쓴다.
     std::optional<float> m_frozenTime;
+
+    // Part 2 레이 씬의 0초 시점처럼, 바닥 앞쪽에서 바닥 중심 위 (0, 0.8, 5)를
+    // 내려다본다. 높이 차 1.2, 수평 거리 6이다.
+    Camera m_camera{{0.0f, 2.0f, -1.0f}, 0.0f, std::atan2(1.2f, 6.0f)};
+    // 오른쪽 버튼을 누르고 있는 동안 커서를 숨기고 이 위치에 붙잡아 둔다.
+    // 프레임마다 여기서 움직인 양만큼 돈다.
+    bool m_mouseLook = false;
+    POINT m_mouseLookAnchor = {};
+    std::chrono::steady_clock::time_point m_lastFrameTime;
 
     ComPtr<ID3D12Fence> m_fence;
     // 마지막으로 Signal()에 넘긴 값이다. 각 프레임은 자기 값을
