@@ -44,8 +44,13 @@ class Engine {
     static constexpr UINT kRootMeshConstants = 0;
     static constexpr UINT kRootTextures = 1;
     static constexpr UINT kRootSceneConstants = 2;
-    // 셰이더 가시 힙의 칸 수다. t1, t2, t3 순서로 연속해서 둔다.
+    // 레이 씬 텍스처 수다. 셰이더 가시 힙의 0~2번 칸에 t1, t2, t3 순서로
+    // 연속해서 두고, 디스크립터 테이블이 힙 시작부터 이 3칸을 읽는다.
     static constexpr UINT kTextureCount = 3;
+    // ImGui 폰트 SRV는 텍스처 다음 칸에 둔다. 테이블이 읽는 0~2번 칸은
+    // 그대로라 테이블 설정을 바꾸지 않아도 된다.
+    static constexpr UINT kGuiFontSlot = kTextureCount;
+    static constexpr UINT kSrvHeapSize = kGuiFontSlot + 1;
 
     void CreateDevice();
     void CreateFrameResources();
@@ -57,6 +62,13 @@ class Engine {
     void CreateFence();
     void LoadTextures();
     void CreateTextureViews();
+    void InitializeGui();
+    void ShutdownGui();
+    // ImGui 새 프레임을 시작하고 창을 만든 뒤 그릴 데이터를 확정한다. 커맨드
+    // 리스트 기록은 Render() 끝에서 한다.
+    void BuildGui();
+    // 카메라와 해가 쓰는 장면 시각(초)이다.
+    float SceneTime() const;
 
     void Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES before,
                     D3D12_RESOURCE_STATES after);
@@ -102,9 +114,14 @@ class Engine {
     Texture m_environmentMap;
     Texture m_irradianceMap;
     Texture m_groundTexture;
-    // 위 텍스처의 SRV를 담는 셰이더 가시 힙이다. 초기화 때 한 번 쓰고 다시
-    // 쓰지 않으므로 프레임마다 나누지 않는다.
+    // 위 텍스처와 ImGui 폰트의 SRV를 담는 셰이더 가시 힙이다. 초기화 때 한 번
+    // 쓰고 다시 쓰지 않으므로 프레임마다 나누지 않는다.
     ComPtr<ID3D12DescriptorHeap> m_srvHeap;
+    UINT m_srvDescriptorSize = 0;
+    // ImGui 백엔드를 초기화했으면 소멸자에서 정리한다.
+    bool m_guiInitialized = false;
+    // ImGui가 kGuiFontSlot 칸에 SRV를 쓰고 아직 돌려주지 않았는지다.
+    bool m_guiFontSlotUsed = false;
     // 카메라는 이 시각부터 흐른 시간에 따라 돈다.
     std::chrono::steady_clock::time_point m_startTime;
     // 값이 있으면 흐른 시간 대신 이 시각을 쓴다.

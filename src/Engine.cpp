@@ -13,6 +13,10 @@
 #include <iostream>
 #include <stdexcept>
 
+#include <imgui.h>
+#include <imgui_impl_dx12.h>
+#include <imgui_impl_win32.h>
+
 #include "Geometry.h"
 #include "Pipeline.h"
 #include "Util.h"
@@ -78,6 +82,10 @@ Engine::~Engine() {
         }
         CloseHandle(m_fenceEvent);
     }
+    // ImGui가 가진 폰트 텍스처와 버퍼도 GPU가 다 쓴 뒤에 놓는다. 힙은 이 뒤에
+    // 멤버 소멸 순서대로 해제된다.
+    if (m_guiInitialized)
+        ShutdownGui();
 }
 
 void Engine::Initialize() {
@@ -96,6 +104,7 @@ void Engine::Initialize() {
     m_ground = Mesh::Create(m_device.Get(), MakeSquare());
     LoadTextures();
     CreateTextureViews();
+    InitializeGui();
 
     m_startTime = std::chrono::steady_clock::now();
 }
@@ -415,14 +424,15 @@ void Engine::CreateTextureViews() {
     // 셰이더가 실행 중에 읽는 칸이라 SHADER_VISIBLE 힙이어야 한다. RTV, DSV
     // 힙과 달리 GPU 핸들로도 가리킬 수 있다.
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
-    heapDesc.NumDescriptors = kTextureCount;
+    // 마지막 칸(kGuiFontSlot)은 ImGui가 폰트 SRV를 쓴다.
+    heapDesc.NumDescriptors = kSrvHeapSize;
     heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     Check(m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_srvHeap)),
           "CreateDescriptorHeap");
 
     // 테이블이 t1부터 연속 3칸을 읽으므로 레지스터 순서대로 칸을 채운다.
-    const UINT descriptorSize = m_device->GetDescriptorHandleIncrementSize(
+    m_srvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(
         D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     D3D12_CPU_DESCRIPTOR_HANDLE handle =
         m_srvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -433,8 +443,108 @@ void Engine::CreateTextureViews() {
     };
     for (const Texture *texture : textures) {
         texture->CreateShaderResourceView(m_device.Get(), handle);
-        handle.ptr += descriptorSize;
+        handle.ptr += m_srvDescriptorSize;
     }
+}
+
+void Engine::InitializeGui() {
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    // 창 위치를 imgui.ini로 남기지 않는다.
+    ImGui::GetIO().IniFilename = nullptr;
+    ImGui_ImplWin32_Init(m_window);
+
+    // 폰트 텍스처의 생성, 업로드, SRV 쓰기는 백엔드가 한다. 엔진은 SRV를 쓸 힙
+    // 칸만 정해 준다. 백엔드는 그릴 때 SetDescriptorHeaps를 하지 않으므로,
+    // 이 칸은 Render()가 프레임마다 묶는 m_srvHeap 안에 있어야 한다.
+    ImGui_ImplDX12_InitInfo info;
+    info.Device = m_device.Get();
+    info.CommandQueue = m_commandQueue.Get();
+    // 백엔드는 정점, 인덱스 버퍼를 이 수만큼 돌려 쓴다. 엔진이 같은 칸의 펜스
+    // 값을 기다린 뒤 기록하므로 프레임 수를 맞추면 GPU가 읽는 버퍼를 덮어쓰지
+    // 않는다.
+    info.NumFramesInFlight = kFrameCount;
+    info.RTVFormat = kBackBufferFormat;
+    // 깊이 버퍼가 묶인 채로 그리므로 PSO의 DSV 형식을 맞춘다. 깊이 테스트는
+    // 백엔드 PSO가 끈다.
+    info.DSVFormat = kDepthFormat;
+    info.UserData = this;
+    info.SrvDescriptorHeap = m_srvHeap.Get();
+    // 1.92 백엔드는 폰트 아틀라스를 첫 RenderDrawData에서 만들고, 아틀라스가
+    // 커지면 새 텍스처의 칸을 먼저 받은 뒤 옛 텍스처를 GPU가 다 쓰고 나서
+    // 돌려준다. 폰트 칸은 하나뿐이라, 쓰는 중인 칸을 또 달라고 하면 덮어쓰지
+    // 않고 멈춘다. 덮어쓰면 진행 중인 프레임이 읽는 칸이 바뀐다.
+    info.SrvDescriptorAllocFn = [](ImGui_ImplDX12_InitInfo *info,
+                                   D3D12_CPU_DESCRIPTOR_HANDLE *cpuHandle,
+                                   D3D12_GPU_DESCRIPTOR_HANDLE *gpuHandle) {
+        Engine *engine = static_cast<Engine *>(info->UserData);
+        if (engine->m_guiFontSlotUsed)
+            throw std::runtime_error(
+                "ImGui asked for a second SRV slot; only one is reserved");
+        engine->m_guiFontSlotUsed = true;
+        const UINT offset = kGuiFontSlot * engine->m_srvDescriptorSize;
+        *cpuHandle = engine->m_srvHeap->GetCPUDescriptorHandleForHeapStart();
+        cpuHandle->ptr += offset;
+        *gpuHandle = engine->m_srvHeap->GetGPUDescriptorHandleForHeapStart();
+        gpuHandle->ptr += offset;
+    };
+    info.SrvDescriptorFreeFn = [](ImGui_ImplDX12_InitInfo *info,
+                                  D3D12_CPU_DESCRIPTOR_HANDLE,
+                                  D3D12_GPU_DESCRIPTOR_HANDLE) {
+        static_cast<Engine *>(info->UserData)->m_guiFontSlotUsed = false;
+    };
+    if (!ImGui_ImplDX12_Init(&info))
+        throw std::runtime_error("ImGui_ImplDX12_Init failed");
+    m_guiInitialized = true;
+}
+
+void Engine::ShutdownGui() {
+    ImGui_ImplDX12_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext();
+    m_guiInitialized = false;
+}
+
+void Engine::BuildGui() {
+    ImGui_ImplDX12_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+
+    ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Scene", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    const ImGuiIO &io = ImGui::GetIO();
+    ImGui::Text("%.1f FPS (%.2f ms)", io.Framerate, 1000.0f / io.Framerate);
+
+    // 멈춘 시각을 바꿔 가며 정답 화면과 같은 장면을 찾는다. 다시 흐르게 하면
+    // 멈춘 시각에서 이어 간다.
+    bool frozen = m_frozenTime.has_value();
+    float time = SceneTime();
+    if (ImGui::Checkbox("Freeze time", &frozen)) {
+        if (frozen) {
+            m_frozenTime = time;
+        } else {
+            m_frozenTime.reset();
+            m_startTime =
+                std::chrono::steady_clock::now() -
+                std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    std::chrono::duration<float>(time));
+        }
+    }
+    if (m_frozenTime)
+        ImGui::SliderFloat("Time (s)", &*m_frozenTime, 0.0f, 30.0f, "%.2f");
+    else
+        ImGui::Text("Time %.2f s", time);
+    ImGui::End();
+
+    ImGui::Render();
+}
+
+float Engine::SceneTime() const {
+    if (m_frozenTime)
+        return *m_frozenTime;
+    return std::chrono::duration<float>(std::chrono::steady_clock::now() -
+                                        m_startTime)
+        .count();
 }
 
 void Engine::Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES before,
@@ -449,6 +559,10 @@ void Engine::Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES before,
 }
 
 void Engine::Render() {
+    // UI는 CPU 쪽 일이라 펜스 대기와 상관없다. 체크박스가 장면 시각을 바꾸므로
+    // 장면을 기록하기 전에 만든다.
+    BuildGui();
+
     // 이 칸은 kFrameCount 프레임 전에 마지막으로 제출됐다. GPU가 그 제출을
     // 지나간 뒤에야 할당자와 상수 버퍼를 다시 쓸 수 있다.
     FrameResource &frame = m_frames[m_frameIndex];
@@ -497,11 +611,7 @@ void Engine::Render() {
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
     // 카메라는 Part 2 레이 씬처럼 바닥 중심 둘레를 돈다.
-    const float time = m_frozenTime
-                           ? *m_frozenTime
-                           : std::chrono::duration<float>(
-                                 std::chrono::steady_clock::now() - m_startTime)
-                                 .count();
+    const float time = SceneTime();
     const float angle = 0.6f * time;
     const XMVECTOR eye = XMVectorSet(6.0f * std::sin(angle), 2.0f,
                                      5.0f - 6.0f * std::cos(angle), 1.0f);
@@ -563,6 +673,11 @@ void Engine::Render() {
         XMMatrixTranslation(kGroundCenter.x, kGroundCenter.y, kGroundCenter.z);
     DrawMesh(frame, m_ground,
              MakeMeshConstants(groundModel, view, projection, kGroundIndex));
+
+    // UI는 장면 위에 마지막으로 그린다. 백엔드는 자기 PSO, 루트 시그니처,
+    // 테이블을 묶으므로 이 뒤에 장면을 더 그리려면 엔진 것을 다시 묶어야 한다.
+    // 힙은 위에서 묶은 m_srvHeap을 그대로 쓴다.
+    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), m_commandList.Get());
 
     Transition(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET,
                D3D12_RESOURCE_STATE_PRESENT);
