@@ -96,7 +96,7 @@
     <FxCompile Include="shaders\MeshVertexShader.hlsl">
       <Filter>Shaders</Filter>
     </FxCompile>
-    <FxCompile Include="shaders\RayScenePixelShader.hlsl">
+    <FxCompile Include="shaders\MeshPixelShader.hlsl">
       <Filter>Shaders</Filter>
     </FxCompile>
     <FxCompile Include="shaders\SkyVertexShader.hlsl">

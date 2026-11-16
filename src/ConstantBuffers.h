@@ -6,52 +6,38 @@
 // 맞춰 전치해서 넣는다. HLSL은 float4(16바이트) 경계를 넘지 않게 값을
 // 채우므로 C++에도 같은 자리에 padding을 둔다.
 
+// 표면의 재질이다. 픽셀은 자기 표면의 재질만 읽으므로 드로우별 b0에 둔다.
+// metallic과 roughness는 직접광 PBR 단계에서 쓴다.
+struct Material {
+    DirectX::XMFLOAT3 albedo;
+    float metallic;
+    float roughness;
+    // 0이 아니면 albedo 대신 t3(바닥 텍스처)를 월드 xz로 읽는다.
+    int useAlbedoTexture;
+    float padding[2];
+};
+
 // b0(cbuffer MeshConstants)다. 드로우 하나에 속하는 값이다. 같은 메시를 여러
-// 번 그리면 드로우마다 다른 값이 들어간다. VS가 행렬을, 레이 PS가
-// objectIndex를 읽는다. 만드는 일은 Engine.cpp의 MakeMeshConstants()가 한다.
+// 번 그리면 드로우마다 다른 값이 들어간다. VS가 행렬을, PS가 재질을 읽는다.
+// 만드는 일은 Engine.cpp의 MakeMeshConstants()가 한다.
 struct MeshConstants {
     DirectX::XMFLOAT4X4 model;
     DirectX::XMFLOAT4X4 invTranspose;
     DirectX::XMFLOAT4X4 view;
     DirectX::XMFLOAT4X4 projection;
-    // 이 드로우가 그리는 물체의 번호다. 0~5는 SceneConstants::spheres의
-    // 번호이고, kSphereCount는 바닥이다.
-    int objectIndex;
-    float padding[3];
-};
-
-// 레이 씬의 구 개수다. HLSL의 SphereCount와 같아야 한다.
-constexpr int kSphereCount = 6;
-
-// 표면의 재질이다. indexOfRefraction이 0이면 불투명한 표면이다.
-struct Surface {
-    DirectX::XMFLOAT3 color;
-    float reflectivity;
-    float indexOfRefraction;
-    float shininess;
-    float padding[2];
-};
-
-struct Sphere {
-    DirectX::XMFLOAT3 center;
-    float radius;
-    Surface surface;
+    Material material;
 };
 
 // b1(cbuffer SceneConstants)다. 한 프레임 동안 모든 드로우가 같은 값을 읽는
-// 장면 전체의 데이터다. 레이 PS가 objectIndex로 자기 물체를 고르고, 이후
-// 단계에서 2차 광선이 다른 물체와 교차할 때도 이 배열을 읽는다.
+// 장면 전체의 데이터다.
 struct SceneConstants {
     DirectX::XMFLOAT3 eyeWorld;
-    float groundHalfExtent;
-    DirectX::XMFLOAT3 groundCenter;
     float padding0;
     // 해(방향광)의 빛이 나아가는 방향이다. 정규화해서 넣는다.
     DirectX::XMFLOAT3 lightDirection;
     float padding1;
-    Sphere spheres[kSphereCount];
 };
 
-static_assert(sizeof(MeshConstants) == 17 * 16, "Must match HLSL b0.");
-static_assert(sizeof(Sphere) == 3 * 16, "Must match HLSL Sphere.");
-static_assert(sizeof(SceneConstants) == 21 * 16, "Must match HLSL b1.");
+static_assert(sizeof(Material) == 2 * 16, "Must match HLSL Material.");
+static_assert(sizeof(MeshConstants) == 18 * 16, "Must match HLSL b0.");
+static_assert(sizeof(SceneConstants) == 2 * 16, "Must match HLSL b1.");

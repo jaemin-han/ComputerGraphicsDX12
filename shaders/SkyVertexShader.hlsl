@@ -1,7 +1,7 @@
 #include "Common.hlsli"
 
 // 메시와 같은 b0(Common.hlsli)을 쓴다. 하늘에서는 view에 이동이 빠져 있어
-// 구가 늘 카메라 중심에 있고, invTranspose와 objectIndex는 쓰지 않는다.
+// 구가 늘 카메라 중심에 있고, invTranspose와 material은 쓰지 않는다.
 
 SkyPixelShaderInput main(VertexShaderInput input)
 {

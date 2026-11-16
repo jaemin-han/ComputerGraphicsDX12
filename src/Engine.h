@@ -37,15 +37,15 @@ class Engine {
     // 정하는 kBackBufferCount와는 별개다.
     static constexpr UINT kFrameCount = 2;
     // 프레임마다 상수를 쓰는 업로드 버퍼 크기다. 지금은 장면 b1 하나와 드로우
-    // 8개(하늘, 구 6개, 바닥)의 b0이 256바이트 정렬로 512바이트씩, 약 4.5KB를
-    // 쓴다. 넘치면 WriteConstants가 예외를 던지므로 여유 있게 잡는다.
+    // 12개(하늘, 구 10개, 바닥)의 b0(288바이트)이 256바이트 정렬로 512바이트씩,
+    // 약 6KB를 쓴다. 넘치면 WriteConstants가 예외를 던지므로 여유 있게 잡는다.
     static constexpr UINT64 kConstantBufferSize = 64 * 1024;
     // 루트 시그니처의 파라미터 번호다. 0은 드로우별 b0(루트 CBV, VS와 PS),
     // 1은 PS의 t1~t3(디스크립터 테이블), 2는 프레임별 b1(루트 CBV, PS)이다.
     static constexpr UINT kRootMeshConstants = 0;
     static constexpr UINT kRootTextures = 1;
     static constexpr UINT kRootSceneConstants = 2;
-    // 레이 씬 텍스처 수다. 셰이더 가시 힙의 0~2번 칸에 t1, t2, t3 순서로
+    // 장면 텍스처 수다. 셰이더 가시 힙의 0~2번 칸에 t1, t2, t3 순서로
     // 연속해서 두고, 디스크립터 테이블이 힙 시작부터 이 3칸을 읽는다.
     static constexpr UINT kTextureCount = 3;
     // ImGui 폰트 SRV는 텍스처 다음 칸에 둔다. 테이블이 읽는 0~2번 칸은
@@ -114,7 +114,7 @@ class Engine {
     Mesh m_sphere;
     Mesh m_ground;
 
-    // 레이 씬의 t2(하늘과 반사), t1(확산 조명), t3(바닥)이다.
+    // t2(하늘), t1(하늘의 확산 조명), t3(바닥)이다.
     Texture m_environmentMap;
     Texture m_irradianceMap;
     Texture m_groundTexture;
@@ -126,14 +126,14 @@ class Engine {
     bool m_guiInitialized = false;
     // ImGui가 kGuiFontSlot 칸에 SRV를 쓰고 아직 돌려주지 않았는지다.
     bool m_guiFontSlotUsed = false;
-    // 카메라는 이 시각부터 흐른 시간에 따라 돈다.
+    // 해는 이 시각부터 흐른 시간에 따라 돈다.
     std::chrono::steady_clock::time_point m_startTime;
     // 값이 있으면 흐른 시간 대신 이 시각을 쓴다.
     std::optional<float> m_frozenTime;
 
-    // Part 2 레이 씬의 0초 시점처럼, 바닥 앞쪽에서 바닥 중심 위 (0, 0.8, 5)를
-    // 내려다본다. 높이 차 1.2, 수평 거리 6이다.
-    Camera m_camera{{0.0f, 2.0f, -1.0f}, 0.0f, std::atan2(1.2f, 6.0f)};
+    // 구 격자 앞에서 두 줄 사이 (0, 0.4, 4.75)를 내려다본다. 높이 차 1.6,
+    // 수평 거리 3.75다.
+    Camera m_camera{{0.0f, 2.0f, 1.0f}, 0.0f, std::atan2(1.6f, 3.75f)};
     // 오른쪽 버튼을 누르고 있는 동안 커서를 숨기고 이 위치에 붙잡아 둔다.
     // 프레임마다 여기서 움직인 양만큼 돈다.
     bool m_mouseLook = false;

@@ -41,35 +41,35 @@ constexpr bool kEnableDebugLayer = false;
 // 법선 행렬(역행렬의 전치)을 전치하면 역행렬이 되므로 invTranspose에는
 // 역행렬을 그대로 넣는다.
 MeshConstants MakeMeshConstants(FXMMATRIX model, CXMMATRIX view,
-                                CXMMATRIX projection, int objectIndex) {
+                                CXMMATRIX projection,
+                                const Material &material = {}) {
     MeshConstants constants = {};
     XMStoreFloat4x4(&constants.model, XMMatrixTranspose(model));
     XMStoreFloat4x4(&constants.invTranspose, XMMatrixInverse(nullptr, model));
     XMStoreFloat4x4(&constants.view, XMMatrixTranspose(view));
     XMStoreFloat4x4(&constants.projection, XMMatrixTranspose(projection));
-    constants.objectIndex = objectIndex;
+    constants.material = material;
     return constants;
 }
 
-// 레이 씬의 물체 번호다. 구는 kSpheres의 번호(0~5)를 쓰고, 바닥은 그
-// 다음이다. 하늘은 레이 PS를 쓰지 않으므로 어떤 물체도 가리키지 않는다.
-constexpr int kGroundIndex = kSphereCount;
-constexpr int kNoObjectIndex = -1;
-
-// Part 2 레이 씬의 구 배치와 재질이다. 중심, 반지름, 그리고 색, 반사율,
-// 굴절률(0이면 불투명), 광택 순서다. 유리 구(0번, 5번)는 색 없이 굴절로만
-// 보이므로 색이 검정이다.
-const Sphere kSpheres[kSphereCount] = {
-    {{0.0f, 0.8f, 2.0f}, 0.8f, {{0.0f, 0.0f, 0.0f}, 0.1f, 1.25f, 32.0f}},
-    {{1.0f, 1.1f, 6.0f}, 1.1f, {{0.3f, 0.3f, 1.0f}, 0.1f, 0.0f, 16.0f}},
-    {{-2.0f, 0.5f, 3.0f}, 0.5f, {{0.8f, 0.8f, 0.1f}, 1.0f, 0.0f, 32.0f}},
-    {{1.5f, 0.8f, 3.0f}, 0.5f, {{0.0f, 1.0f, 1.0f}, 0.0f, 0.0f, 0.0f}},
-    {{-0.8f, 1.0f, 4.0f}, 1.0f, {{1.0f, 0.1f, 0.1f}, 0.5f, 0.0f, 16.0f}},
-    {{-2.0f, 1.0f, 7.0f}, 1.0f, {{0.0f, 0.0f, 0.0f}, 0.1f, 1.5f, 32.0f}},
-};
-
 constexpr float kGroundHalfExtent = 5.0f;
 const XMFLOAT3 kGroundCenter = {0.0f, 0.0f, 5.0f};
+
+// 재질 구 격자다. 바닥 위에 두 줄로 늘어놓아 구마다 바로 옆 바닥에 그림자가
+// 지게 한다. 앞줄은 비금속, 뒷줄은 금속이고, 가로로 갈수록 roughness가
+// 0에서 1로 커진다. 반지름은 Part 3 12.1의 구와 같다.
+constexpr int kGridColumns = 5;
+constexpr float kGridSphereRadius = 0.4f;
+constexpr float kGridSpacing = 1.0f;
+struct GridRow {
+    float z;
+    XMFLOAT3 albedo;
+    float metallic;
+};
+const GridRow kGridRows[] = {
+    {4.0f, {0.8f, 0.1f, 0.1f}, 0.0f},   // 빨간 플라스틱
+    {5.5f, {1.0f, 0.78f, 0.34f}, 1.0f}, // 금
+};
 
 } // namespace
 
@@ -292,8 +292,8 @@ void Engine::CreatePipeline() {
     D3D12_ROOT_PARAMETER rootParameters[3] = {};
 
     // 0: 드로우별 b0. 드로우마다 바뀌므로, 디스크립터를 거치지 않고 GPU
-    // 주소를 바로 넘기는 루트 CBV로 둔다. VS가 행렬을, 레이 PS가 물체 번호를
-    // 읽으므로 모든 단계에 보이게 한다.
+    // 주소를 바로 넘기는 루트 CBV로 둔다. VS가 행렬을, PS가 재질을 읽으므로
+    // 모든 단계에 보이게 한다.
     D3D12_ROOT_PARAMETER &meshConstants = rootParameters[kRootMeshConstants];
     meshConstants.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     meshConstants.Descriptor.ShaderRegister = 0; // b0
@@ -375,7 +375,7 @@ void Engine::CreatePipeline() {
 
     PipelineSettings mesh;
     mesh.vertexShader = "MeshVertexShader.cso";
-    mesh.pixelShader = "RayScenePixelShader.cso";
+    mesh.pixelShader = "MeshPixelShader.cso";
     m_meshPipeline =
         CreateGraphicsPipeline(m_device.Get(), m_rootSignature.Get(),
                                kBackBufferFormat, kDepthFormat, mesh);
@@ -685,15 +685,11 @@ void Engine::Render() {
     // 연결한다. 루트 인자는 다시 설정할 때까지 이후 드로우에 남는다.
     SceneConstants scene = {};
     XMStoreFloat3(&scene.eyeWorld, eye);
-    scene.groundHalfExtent = kGroundHalfExtent;
-    scene.groundCenter = kGroundCenter;
     // 해는 Part 2처럼 아래를 향한 채 수평으로 돈다.
     const float lightAngle = 0.7f * time;
     XMStoreFloat3(&scene.lightDirection,
                   XMVector3Normalize(XMVectorSet(std::sin(lightAngle), -1.0f,
                                                  std::cos(lightAngle), 0.0f)));
-    for (int i = 0; i < kSphereCount; ++i)
-        scene.spheres[i] = kSpheres[i];
     m_commandList->SetGraphicsRootConstantBufferView(
         kRootSceneConstants, frame.WriteConstants(&scene, sizeof(scene)));
 
@@ -705,23 +701,29 @@ void Engine::Render() {
     skyView.r[3] = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
     DrawMesh(frame, m_sphere,
              MakeMeshConstants(XMMatrixScaling(10.0f, 10.0f, 10.0f), skyView,
-                               projection, kNoObjectIndex));
+                               projection));
 
-    // 구 6개를 먼저, 바닥을 마지막에 그린다. 깊이 테스트가 있어서 그리는
+    // 구 격자를 먼저, 바닥을 마지막에 그린다. 깊이 테스트가 있어서 그리는
     // 순서와 상관없이 카메라에 가까운 것이 남는다. 하늘은 깊이를 쓰지
     // 않았으므로 깊이 버퍼는 클리어 값 그대로이고, 이 메시들은 하늘 위에
     // 덮인다.
     m_commandList->SetPipelineState(m_meshPipeline.Get());
-    // 드로우마다 b0에 물체 번호를 함께 넣어, 레이 PS가 b1에서 자기 재질을
-    // 고르게 한다.
-    for (int i = 0; i < kSphereCount; ++i) {
-        const Sphere &sphere = kSpheres[i];
-        const XMMATRIX model =
-            XMMatrixScaling(sphere.radius, sphere.radius, sphere.radius) *
-            XMMatrixTranslation(sphere.center.x, sphere.center.y,
-                                sphere.center.z);
-        DrawMesh(frame, m_sphere,
-                 MakeMeshConstants(model, view, projection, i));
+    // 픽셀은 자기 표면의 재질만 읽으므로 재질을 드로우별 b0에 직접 넣는다.
+    // 구는 바닥에 닿도록 중심을 반지름 높이에 둔다.
+    for (const GridRow &row : kGridRows) {
+        for (int column = 0; column < kGridColumns; ++column) {
+            const float x = (column - (kGridColumns - 1) * 0.5f) * kGridSpacing;
+            const XMMATRIX model =
+                XMMatrixScaling(kGridSphereRadius, kGridSphereRadius,
+                                kGridSphereRadius) *
+                XMMatrixTranslation(x, kGridSphereRadius, row.z);
+            Material material = {};
+            material.albedo = row.albedo;
+            material.metallic = row.metallic;
+            material.roughness = float(column) / (kGridColumns - 1);
+            DrawMesh(frame, m_sphere,
+                     MakeMeshConstants(model, view, projection, material));
+        }
     }
 
     // 정사각형은 -z를 향하므로 x축으로 90도 돌려 위를 향하게 눕힌다.
@@ -730,8 +732,12 @@ void Engine::Render() {
                         kGroundHalfExtent) *
         XMMatrixRotationX(XM_PIDIV2) *
         XMMatrixTranslation(kGroundCenter.x, kGroundCenter.y, kGroundCenter.z);
+    Material groundMaterial = {};
+    groundMaterial.albedo = {1.0f, 1.0f, 1.0f};
+    groundMaterial.roughness = 1.0f;
+    groundMaterial.useAlbedoTexture = 1;
     DrawMesh(frame, m_ground,
-             MakeMeshConstants(groundModel, view, projection, kGroundIndex));
+             MakeMeshConstants(groundModel, view, projection, groundMaterial));
 
     // UI는 장면 위에 마지막으로 그린다. 백엔드는 자기 PSO, 루트 시그니처,
     // 테이블을 묶으므로 이 뒤에 장면을 더 그리려면 엔진 것을 다시 묶어야 한다.
