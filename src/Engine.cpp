@@ -107,8 +107,7 @@ void Engine::Initialize() {
     CreateTextureViews();
     InitializeGui();
 
-    m_startTime = std::chrono::steady_clock::now();
-    m_lastFrameTime = m_startTime;
+    m_lastFrameTime = std::chrono::steady_clock::now();
 }
 
 int Engine::Run() {
@@ -517,26 +516,6 @@ void Engine::BuildGui() {
     const ImGuiIO &io = ImGui::GetIO();
     ImGui::Text("%.1f FPS (%.2f ms)", io.Framerate, 1000.0f / io.Framerate);
 
-    // 장면 시각은 해의 방향을 정한다. 멈춘 시각을 바꿔 가며 조명을 맞추고,
-    // 다시 흐르게 하면 멈춘 시각에서 이어 간다.
-    bool frozen = m_frozenTime.has_value();
-    float time = SceneTime();
-    if (ImGui::Checkbox("Freeze time", &frozen)) {
-        if (frozen) {
-            m_frozenTime = time;
-        } else {
-            m_frozenTime.reset();
-            m_startTime =
-                std::chrono::steady_clock::now() -
-                std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                    std::chrono::duration<float>(time));
-        }
-    }
-    if (m_frozenTime)
-        ImGui::SliderFloat("Time (s)", &*m_frozenTime, 0.0f, 30.0f, "%.2f");
-    else
-        ImGui::Text("Time %.2f s", time);
-
     ImGui::Separator();
     XMFLOAT3 position;
     XMStoreFloat3(&position, m_camera.Position());
@@ -544,6 +523,21 @@ void Engine::BuildGui() {
     ImGui::Text("Yaw %.1f  Pitch %.1f", XMConvertToDegrees(m_camera.Yaw()),
                 XMConvertToDegrees(m_camera.Pitch()));
     ImGui::TextDisabled("Hold RMB to look, WASD/QE to move, Shift: fast");
+
+    // 조명이다. View를 F, D, G로 바꾸면 점광원 하나에 대한 그 항만 색으로
+    // 보여 준다. 아직 채우지 않은 항은 마젠타다.
+    ImGui::Separator();
+    LightingSettings &lighting = m_lighting;
+    ImGui::Combo("View", &lighting.debugView,
+                 "Final\0F (Fresnel)\0D (GGX)\0G (Smith)\0");
+    ImGui::DragFloat3("Light position", &lighting.pointPosition.x, 0.02f);
+    ImGui::ColorEdit3("Light color", &lighting.pointColor.x);
+    ImGui::SliderFloat("Light intensity", &lighting.pointIntensity, 0.0f, 20.0f,
+                       "%.2f");
+    ImGui::SliderFloat("Fall-off start", &lighting.pointFallOffStart, 0.0f,
+                       lighting.pointFallOffEnd, "%.1f");
+    ImGui::SliderFloat("Fall-off end", &lighting.pointFallOffEnd,
+                       lighting.pointFallOffStart + 0.1f, 50.0f, "%.1f");
     ImGui::End();
 
     ImGui::Render();
@@ -594,14 +588,6 @@ void Engine::UpdateCamera(float deltaSeconds) {
     m_camera.Move(axis(ImGuiKey_W, ImGuiKey_S) * distance,
                   axis(ImGuiKey_D, ImGuiKey_A) * distance,
                   axis(ImGuiKey_E, ImGuiKey_Q) * distance);
-}
-
-float Engine::SceneTime() const {
-    if (m_frozenTime)
-        return *m_frozenTime;
-    return std::chrono::duration<float>(std::chrono::steady_clock::now() -
-                                        m_startTime)
-        .count();
 }
 
 void Engine::Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES before,
@@ -674,7 +660,6 @@ void Engine::Render() {
         kRootTextures, m_srvHeap->GetGPUDescriptorHandleForHeapStart());
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    const float time = SceneTime();
     const XMVECTOR eye = m_camera.Position();
     const XMMATRIX view = m_camera.View();
     const XMMATRIX projection =
@@ -685,11 +670,13 @@ void Engine::Render() {
     // 연결한다. 루트 인자는 다시 설정할 때까지 이후 드로우에 남는다.
     SceneConstants scene = {};
     XMStoreFloat3(&scene.eyeWorld, eye);
-    // 해는 Part 2처럼 아래를 향한 채 수평으로 돈다.
-    const float lightAngle = 0.7f * time;
-    XMStoreFloat3(&scene.lightDirection,
-                  XMVector3Normalize(XMVectorSet(std::sin(lightAngle), -1.0f,
-                                                 std::cos(lightAngle), 0.0f)));
+    scene.debugView = m_lighting.debugView;
+    scene.pointLight.position = m_lighting.pointPosition;
+    XMStoreFloat3(&scene.pointLight.radiance,
+                  XMLoadFloat3(&m_lighting.pointColor) *
+                      m_lighting.pointIntensity);
+    scene.pointLight.fallOffStart = m_lighting.pointFallOffStart;
+    scene.pointLight.fallOffEnd = m_lighting.pointFallOffEnd;
     m_commandList->SetGraphicsRootConstantBufferView(
         kRootSceneConstants, frame.WriteConstants(&scene, sizeof(scene)));
 

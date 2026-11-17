@@ -7,7 +7,8 @@
 // 채우므로 C++에도 같은 자리에 padding을 둔다.
 
 // 표면의 재질이다. 픽셀은 자기 표면의 재질만 읽으므로 드로우별 b0에 둔다.
-// metallic과 roughness는 직접광 PBR 단계에서 쓴다.
+// roughness는 슬라이더 값(0~1) 그대로이고, 식에 넣을 α로 바꾸는 일은 셰이더가
+// 한다.
 struct Material {
     DirectX::XMFLOAT3 albedo;
     float metallic;
@@ -28,16 +29,26 @@ struct MeshConstants {
     Material material;
 };
 
+// 점광원이다. 광원 값(radiance)은 빛을 수직으로 받는 면에 들어오는
+// irradiance이고, 셰이더가 거리에 따른 감쇠를 곱한다. 감쇠는 선형 창으로,
+// fallOffStart까지 1이고 fallOffEnd에서 0이 된다.
+struct PointLight {
+    DirectX::XMFLOAT3 position;
+    float fallOffStart;
+    DirectX::XMFLOAT3 radiance;
+    float fallOffEnd;
+};
+
 // b1(cbuffer SceneConstants)다. 한 프레임 동안 모든 드로우가 같은 값을 읽는
 // 장면 전체의 데이터다.
 struct SceneConstants {
     DirectX::XMFLOAT3 eyeWorld;
-    float padding0;
-    // 해(방향광)의 빛이 나아가는 방향이다. 정규화해서 넣는다.
-    DirectX::XMFLOAT3 lightDirection;
-    float padding1;
+    // 0이면 최종 색, 1~3이면 점광원에 대한 F, D, G 항 하나를 보여 준다.
+    int debugView;
+    PointLight pointLight;
 };
 
 static_assert(sizeof(Material) == 2 * 16, "Must match HLSL Material.");
 static_assert(sizeof(MeshConstants) == 18 * 16, "Must match HLSL b0.");
-static_assert(sizeof(SceneConstants) == 2 * 16, "Must match HLSL b1.");
+static_assert(sizeof(PointLight) == 2 * 16, "Must match HLSL PointLight.");
+static_assert(sizeof(SceneConstants) == 3 * 16, "Must match HLSL b1.");

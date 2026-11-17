@@ -8,7 +8,6 @@
 
 #include <chrono>
 #include <cmath>
-#include <optional>
 
 #include "Camera.h"
 #include "ConstantBuffers.h"
@@ -26,8 +25,6 @@ class Engine {
 
     void Initialize();
     int Run();
-    // 해를 이 시각(초)의 방향에 멈춘다. 같은 조명으로 화면을 비교할 때 쓴다.
-    void FreezeTime(float seconds) { m_frozenTime = seconds; }
 
   private:
     static constexpr UINT kWidth = 1280;
@@ -68,8 +65,6 @@ class Engine {
     // ImGui 새 프레임을 시작하고 창을 만든 뒤 그릴 데이터를 확정한다. 커맨드
     // 리스트 기록은 Render() 끝에서 한다.
     void BuildGui();
-    // 카메라와 해가 쓰는 장면 시각(초)이다.
-    float SceneTime() const;
     // 마우스(오른쪽 버튼을 누른 동안)와 키보드 입력으로 1인칭 카메라를
     // 움직인다. ImGui가 입력을 받은 뒤에 부른다.
     void UpdateCamera(float deltaSeconds);
@@ -114,7 +109,8 @@ class Engine {
     Mesh m_sphere;
     Mesh m_ground;
 
-    // t2(하늘), t1(하늘의 확산 조명), t3(바닥)이다.
+    // t2(하늘), t1(하늘의 확산 조명), t3(바닥)이다. t1은 직접광 PBR로 바꾸며
+    // 읽는 셰이더가 없어졌고, IBL 단계에서 다시 쓴다.
     Texture m_environmentMap;
     Texture m_irradianceMap;
     Texture m_groundTexture;
@@ -126,10 +122,21 @@ class Engine {
     bool m_guiInitialized = false;
     // ImGui가 kGuiFontSlot 칸에 SRV를 쓰고 아직 돌려주지 않았는지다.
     bool m_guiFontSlotUsed = false;
-    // 해는 이 시각부터 흐른 시간에 따라 돈다.
-    std::chrono::steady_clock::time_point m_startTime;
-    // 값이 있으면 흐른 시간 대신 이 시각을 쓴다.
-    std::optional<float> m_frozenTime;
+
+    // ImGui로 고치는 조명 설정이다. 프레임마다 b1에 옮겨 쓴다.
+    struct LightingSettings {
+        // 점광원은 구 격자 앞 위쪽, 카메라와 앞줄 사이에 둔다. BRDF에 1/π를
+        // 남기므로 세기 π는 빛을 정면으로 받는 흰 Lambert 면이 거의 albedo
+        // 그대로(화면 값 1 근처) 보이는 값이다. 톤 매핑이 없어 1 위는
+        // 잘리므로 이것을 기준 밝기로 둔다.
+        DirectX::XMFLOAT3 pointPosition = {0.0f, 2.0f, 3.0f};
+        DirectX::XMFLOAT3 pointColor = {1.0f, 1.0f, 1.0f};
+        float pointIntensity = DirectX::XM_PI;
+        float pointFallOffStart = 0.0f;
+        float pointFallOffEnd = 20.0f;
+        int debugView = 0;
+    };
+    LightingSettings m_lighting;
 
     // 구 격자 앞에서 두 줄 사이 (0, 0.4, 4.75)를 내려다본다. 높이 차 1.6,
     // 수평 거리 3.75다.

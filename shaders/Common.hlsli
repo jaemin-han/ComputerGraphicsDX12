@@ -26,12 +26,22 @@ cbuffer MeshConstants : register(b0)
     Material material;
 };
 
+// C++의 PointLight와 같은 배치다.
+struct PointLight
+{
+    float3 position;
+    float fallOffStart;
+    float3 radiance; // 빛을 수직으로 받는 면에 들어오는 irradiance다.
+    float fallOffEnd;
+};
+
 // C++의 SceneConstants와 같은 배치다. 프레임마다 한 번 쓰고 모든 드로우가
 // 같은 값을 읽는다.
 cbuffer SceneConstants : register(b1)
 {
     float3 eyeWorld;
-    float3 lightDirection; // 해의 빛이 나아가는 방향이다.
+    int debugView;
+    PointLight pointLight;
 };
 
 // 하늘 패스의 VS 출력이다. 큐브맵을 읽을 방향만 넘긴다.
