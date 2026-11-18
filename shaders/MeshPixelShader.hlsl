@@ -1,18 +1,29 @@
 #include "Common.hlsli"
 
-// 구 격자 장면의 직접광 PBR이다. 점광원에서 오는 빛을 Lambert diffuse와
+// 구 격자 장면의 직접광 PBR이다. 스포트라이트에서 오는 빛을 Lambert diffuse와
 // Cook-Torrance specular로 셰이딩한다. BRDF는 노트(PBR 4절) 그대로 diffuse에
 // 1/π를 남기고 specular에는 π를 곱하지 않는다. 그래서 광원 값은 빛을 수직으로
 // 받는 면에 들어오는 irradiance다. 하늘빛(IBL)은 마감 뒤에 다루므로, 빛이 닿지
-// 않는 곳은 검정이다.
-Texture2D groundTexture : register(t3);
+// 않는 곳(그림자 포함)은 검정이다.
+
+// 루트 파라미터 1의 테이블(t0~t3) 중 t2, t3을 읽는다. t3은 그림자 패스가 이번
+// 프레임에 깊이를 쓴 그림자 맵이다. 메시 패스 전에 배리어로 PS가 읽는 상태가
+// 돼 있어야 한다.
+Texture2D groundTexture : register(t2);
+Texture2D shadowMap : register(t3);
 SamplerState linearWrapSampler : register(s0);
+// 그림자 맵 전용 샘플러다(루트 시그니처의 정적 샘플러). 깊이 값은 섞으면
+// 안 되므로 가장 가까운 텍셀 하나를 그대로 읽는다(필터링은 PCF 단계에서
+// 다룬다). UV가 [0, 1] 밖이면 텍스처 대신 테두리 색을 돌려주는데, 정적
+// 샘플러가 고를 수 있는 테두리 색은 검정, 투명, 흰색뿐이다. 흰색을 골랐으므로
+// 맵 밖에서 읽은 깊이는 1(가장 먼 값)이다. 13.4는 테두리 값으로 100을 줬다.
+SamplerState shadowPointSampler : register(s1);
 
 static const float PI = 3.14159265f;
 
-// b1의 debugView 값이다. Final 말고는 점광원 하나에 대한 BRDF 중간값 하나를
-// 광원 값과 n·l을 곱하기 전 그대로 색으로 보여 준다. 1을 넘는 값은 백버퍼에
-// 쓸 때 잘려 흰색이 된다.
+// b1의 debugView 값이다. Final 말고는 중간값 하나를 그대로 색으로 보여 준다.
+// 1~7은 광원 하나에 대한 BRDF 중간값으로, 광원 값과 n·l을 곱하기 전이다. 1을
+// 넘는 값은 백버퍼에 쓸 때 잘려 흰색이 된다.
 static const int DebugViewFinal = 0;
 static const int DebugViewFresnel = 1;
 static const int DebugViewDistribution = 2;
@@ -21,6 +32,8 @@ static const int DebugViewDiffuseWeight = 4;  // kDiffuse
 static const int DebugViewDiffuseBrdf = 5;    // kDiffuse * fDiff
 static const int DebugViewSpecularBrdf = 6;   // fSpec
 static const int DebugViewBrdf = 7;           // kDiffuse * fDiff + fSpec
+static const int DebugViewSpotFactor = 8;     // SpotFactor() 결과
+static const int DebugViewShadowFactor = 9;   // ShadowFactor() 결과
 
 // 미세면 하나가 빛을 반사하는 비율 F다(Schlick 근사, 채널별 0~1). 정면 반사율
 // F0은 metallic 워크플로로 정한다. 비금속은 0.04, 금속은 albedo다. vDotH가 1이면
@@ -104,6 +117,50 @@ float3 DirectLighting(float3 albedo, float metallic, float roughness,
     return radiance;
 }
 
+// 스포트라이트의 원뿔 감쇠다(0~1). 점광원과 스포트라이트의 차이는 이 계수
+// 하나다. l은 표면에서 광원으로 가는 단위 벡터이고 direction은 광원에서 비추는
+// 쪽으로 가는 벡터라, l을 뒤집어 방향을 맞춘 뒤 비교한다. 축 위에서 1이고
+// 축에서 벗어날수록 줄며, 90° 이상(광원 뒤쪽)은 0이다. spotPower가 클수록 빨리
+// 줄어 밝은 원이 좁아진다.
+float SpotFactor(float3 l)
+{
+    float3 lightToPos = -l;
+    float lDotD = saturate(dot(lightToPos, spotLight.direction));
+    return pow(lDotD, spotLight.spotPower);
+}
+
+// 그림자 맵으로 가림을 판정한다. 1이면 광원에서 보이는 표면(빛을 받음), 0이면
+// 다른 표면에 가려진 표면(그림자)이다. 13.4 [읽기 7]과 같은 일이고, 행렬과 맵이
+// 들어오는 길(b1, 디스크립터 테이블 t3, 정적 샘플러 s1)만 다르다.
+//
+// - 비교하는 깊이는 그림자 패스가 기록한 값과 같은 기준인 NDC z다. 클립 z는
+//   w로 나누기 전이라 기준이 다르다.
+// - 맵 밖의 UV는 s1이 깊이 1을 돌려줘 빛을 받는 것으로 판정된다. 광원의
+//   투영(Engine.cpp의 MakeSpotLightMatrices)이 그림자를 드리우는 구를 모두
+//   담으므로, 맵 밖에는 가릴 물체가 없다.
+// - bias 1e-4로 바닥의 shadow acne는 없다. 구의 명암 경계(n·l ≈ 0) 근처에는
+//   acne 띠가 남지만, 그곳은 n·l이 0에 가까워 최종 화면에는 거의 보이지 않는다.
+float ShadowFactor(float3 posWorld)
+{
+    // 월드 → 광원 클립 공간 → NDC다.
+    float4 posClip = mul(float4(posWorld, 1.0f), spotLight.viewProj);
+    float3 posNDC = posClip.xyz / posClip.w;
+    float posDepth = posNDC.z;
+
+    // NDC xy [-1, 1]을 텍스처 좌표 [0, 1]로 옮긴다. 텍스처는 왼쪽 위가
+    // 원점이고 아래로 갈수록 v가 커져서 y를 뒤집는다.
+    float2 uv = posNDC.xy * 0.5f + 0.5f;
+    uv.y = 1.0f - uv.y;
+
+    // 이 방향에서 광원에 가장 가까웠던 표면의 깊이다.
+    float shadowMapDepth = shadowMap.Sample(shadowPointSampler, uv).r;
+
+    // 같은 표면이 정밀도 오차로 자기를 가리지 않도록 bias를 둔다. 삼항
+    // 연산자로 써서 FXC가 분기 없이(lt, and) 컴파일한다. if로 써도 드라이버가
+    // 이 정도 분기는 select로 바꾸는 경우가 많아 차이는 거의 없다.
+    return posDepth < shadowMapDepth + 1e-4f ? 1.0f : 0.0f;
+}
+
 float4 main(PixelShaderInput input) : SV_TARGET
 {
     float3 n = normalize(input.normalWorld);
@@ -117,18 +174,29 @@ float4 main(PixelShaderInput input) : SV_TARGET
                      .SampleLevel(linearWrapSampler, input.posWorld.xz * 0.5f, 0)
                      .rgb;
 
-    // 점광원까지의 거리는 감쇠에 쓰고, 방향은 정규화해서 BRDF에 쓴다.
-    float3 toLight = pointLight.position - input.posWorld;
+    // 광원까지의 거리는 감쇠에 쓰고, 방향은 정규화해서 BRDF에 쓴다.
+    float3 toLight = spotLight.position - input.posWorld;
     float lightDistance = length(toLight);
     float3 l = toLight / lightDistance;
 
-    // 감쇠는 선형 창이다(노트 3절). 물리적인 점광원은 1/d²로 줄어 0이 되지
+    // 거리 감쇠는 선형 창이다(노트 3절). 물리적인 점광원은 1/d²로 줄어 0이 되지
     // 않지만, 창을 씌우면 fallOffEnd 밖에서 기여가 정확히 0이라 광원의 영향
     // 범위가 분명해진다.
     float attenuation =
-        saturate((pointLight.fallOffEnd - lightDistance) /
-                 (pointLight.fallOffEnd - pointLight.fallOffStart));
+        saturate((spotLight.fallOffEnd - lightDistance) /
+                 (spotLight.fallOffEnd - spotLight.fallOffStart));
+    float spot = SpotFactor(l);
+    float shadow = ShadowFactor(input.posWorld);
+
+    if (debugView == DebugViewSpotFactor)
+        return float4(spot.xxx, 1.0f);
+    if (debugView == DebugViewShadowFactor)
+        return float4(shadow.xxx, 1.0f);
+
+    // 원뿔 밖이나 그림자 속이면 이 광원의 직접광이 통째로 꺼진다. 다른 빛(IBL)이
+    // 없으므로 그곳은 검정이다.
+    float3 irradiance = spotLight.radiance * attenuation * spot * shadow;
     float3 color = DirectLighting(albedo, material.metallic, material.roughness,
-                                  n, v, l, pointLight.radiance * attenuation);
+                                  n, v, l, irradiance);
     return float4(color, 1.0f);
 }

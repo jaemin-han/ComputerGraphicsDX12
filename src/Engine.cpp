@@ -36,6 +36,11 @@ constexpr bool kEnableDebugLayer = true;
 #else
 constexpr bool kEnableDebugLayer = false;
 #endif
+// GPU 기반 검증이다. 기본 디버그 레이어는 디스크립터 테이블로 읽는 자원의
+// 상태(배리어)를 검사하지 못한다. 셰이더가 실제로 읽는 순간을 GPU에서 검사하는
+// 이 기능을 켜야 잡힌다. 매우 느려서 기본으로는 끄고, 배리어를 바꿨을 때만
+// 잠시 true로 바꿔 Debug 빌드로 확인한다.
+constexpr bool kEnableGpuBasedValidation = false;
 
 // DirectXMath는 행 우선이고 HLSL cbuffer는 기본이 열 우선이라 전치해서 넣는다.
 // 법선 행렬(역행렬의 전치)을 전치하면 역행렬이 되므로 invTranspose에는
@@ -50,6 +55,31 @@ MeshConstants MakeMeshConstants(FXMMATRIX model, CXMMATRIX view,
     XMStoreFloat4x4(&constants.projection, XMMatrixTranspose(projection));
     constants.material = material;
     return constants;
+}
+
+// 스포트라이트 시점의 뷰 행렬과 투영 행렬을 만든다. 그림자 맵은 "광원이
+// 카메라라면 보일 장면의 깊이"라서, 메인 카메라의 Camera::View()와 projection이
+// 하는 일을 광원에 대해 한다(13.4 [읽기 1]). position은 광원의 월드 위치,
+// direction은 비추는 쪽으로 가는 단위 벡터다. DirectXMath 행 우선 행렬 그대로
+// 돌려주고, 셰이더에 맞춘 전치는 b0에 쓸 때 MakeMeshConstants()가, b1에 쓸 때
+// Render()가 한다.
+void MakeSpotLightMatrices(FXMVECTOR position, FXMVECTOR direction,
+                           XMMATRIX &view, XMMATRIX &projection) {
+    // LookTo는 up과 direction의 외적으로 광원의 오른쪽 축을 만든다. 둘이
+    // 평행하면(바로 위나 아래를 비추면) 외적이 0이라 축을 정할 수 없으므로,
+    // 그때는 월드 x축을 up으로 쓴다.
+    XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    if (std::abs(XMVectorGetX(XMVector3Dot(up, direction))) > 0.999f)
+        up = XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f);
+    view = XMMatrixLookToLH(position, direction, up);
+
+    // 그림자 맵은 정사각형이라 종횡비는 1이다. 그림자를 드리우는 구 10개가 모두
+    // 맵 안에 들어와야 한다. 광원에서 보면 그림자 진 바닥은 그 구 뒤에 가려져
+    // 있으므로, 구가 맵 안이면 그 그림자도 맵 안이다. 기본 광원 위치에서 필요한
+    // 최소 FOV는 약 61°(뒷줄 왼쪽 구)이고, 광원을 옮길 여유를 두어 70°로 했다.
+    // 넓힐수록 텍셀 하나가 덮는 바닥이 넓어진다(13.4는 120°).
+    projection =
+        XMMatrixPerspectiveFovLH(XMConvertToRadians(70.0f), 1.0f, 0.1f, 20.0f);
 }
 
 constexpr float kGroundHalfExtent = 5.0f;
@@ -97,6 +127,7 @@ void Engine::Initialize() {
     CreateSwapChain();
     CreateRenderTargets();
     CreateDepthBuffer();
+    CreateShadowMap();
     CreatePipeline();
     // 텍스처 업로드가 GPU 완료를 기다려야 해서 펜스를 먼저 만든다.
     CreateFence();
@@ -133,6 +164,9 @@ void Engine::CreateDevice() {
         if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
             debug->EnableDebugLayer();
             factoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+            ComPtr<ID3D12Debug1> debug1;
+            if (kEnableGpuBasedValidation && SUCCEEDED(debug.As(&debug1)))
+                debug1->SetEnableGPUBasedValidation(TRUE);
         } else {
             std::cerr << "D3D12 debug layer is not available." << std::endl;
         }
@@ -247,11 +281,14 @@ void Engine::CreateRenderTargets() {
 void Engine::CreateDepthBuffer() {
     // RTV처럼 DSV도 디스크립터 힙의 칸에 만든다. Clear와 OMSet은 리소스가
     // 아니라 이 칸(어떤 형식으로 어떻게 쓸지 적은 기록)을 받는다.
+    // 칸 0은 이 깊이 버퍼, 칸 1은 그림자 맵(CreateShadowMapViews())이다.
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
-    heapDesc.NumDescriptors = 1;
+    heapDesc.NumDescriptors = kDsvHeapSize;
     heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
     Check(m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_dsvHeap)),
           "CreateDescriptorHeap");
+    m_dsvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
 
     // GPU만 쓰는 텍스처라 기본 힙에 둔다. 크기는 백버퍼와 같아야 한다.
     D3D12_HEAP_PROPERTIES heap = {};
@@ -273,17 +310,59 @@ void Engine::CreateDepthBuffer() {
     clearValue.Format = kDepthFormat;
     clearValue.DepthStencil.Depth = 1.0f;
 
-    // 깊이 쓰기 상태로 만들고 계속 그 상태로 둔다. 셰이더가 깊이를 읽는 패스가
-    // 없어서 배리어가 필요 없다.
+    // 깊이 쓰기 상태로 만들고 계속 그 상태로 둔다. 셰이더가 이 깊이 버퍼를
+    // 읽는 패스가 없어서 배리어가 필요 없다. 셰이더가 읽는 깊이는 그림자 맵이
+    // 따로 갖는다.
     Check(m_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
                                             D3D12_RESOURCE_STATE_DEPTH_WRITE,
                                             &clearValue,
                                             IID_PPV_ARGS(&m_depthBuffer)),
           "CreateCommittedResource");
 
-    m_device->CreateDepthStencilView(
-        m_depthBuffer.Get(), nullptr,
-        m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
+    // 형식이 정해진 자원(D32_FLOAT)이라 desc 없이(nullptr) 자원 형식 그대로
+    // 해석하는 DSV를 만든다.
+    D3D12_CPU_DESCRIPTOR_HANDLE handle =
+        m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
+    handle.ptr += SIZE_T(kMainDepthSlot) * m_dsvDescriptorSize;
+    m_device->CreateDepthStencilView(m_depthBuffer.Get(), nullptr, handle);
+}
+
+void Engine::CreateShadowMap() {
+    // 메인 깊이 버퍼처럼 GPU만 읽고 쓰는 텍스처라 기본 힙에 둔다.
+    D3D12_HEAP_PROPERTIES heap = {};
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    // 한 텍스처를 두 가지로 해석한다. 그림자 패스는 깊이(DSV)로 쓰고, 메시 PS는
+    // float 값(SRV)으로 읽는다. 깊이 형식(D32_FLOAT)으로 만들면 SRV를 만들 수
+    // 없고, 색 형식(R32_FLOAT)으로 만들면 DSV를 만들 수 없다. 그래서 자원은
+    // "32비트 하나"라는 크기만 정한 TYPELESS로 만들고, 해석은 뷰마다 정한다
+    // (13.4 [읽기 2]와 같다. 뷰는 CreateShadowMapViews()).
+    D3D12_RESOURCE_DESC desc = {};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = kShadowMapSize;
+    desc.Height = kShadowMapSize;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = DXGI_FORMAT_R32_TYPELESS;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    // DSV를 만들 수 있게 한다. 이 플래그가 있어도 DENY_SHADER_RESOURCE를 같이
+    // 주지 않았으므로 SRV도 만들 수 있다.
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+    // 그림자 패스도 매 프레임 1.0으로 지운다. 최적화 클리어 값은 DSV가 쓸
+    // 형식으로 적는다(자원 형식인 TYPELESS로는 적을 수 없다).
+    D3D12_CLEAR_VALUE clearValue = {};
+    clearValue.Format = kDepthFormat;
+    clearValue.DepthStencil.Depth = 1.0f;
+
+    // 프레임 경계에서의 상태(DEPTH_WRITE)로 만든다. 첫 프레임의 그림자 패스도
+    // 이 상태에서 시작한다.
+    Check(m_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                                            &clearValue,
+                                            IID_PPV_ARGS(&m_shadowMap)),
+          "CreateCommittedResource");
 }
 
 void Engine::CreatePipeline() {
@@ -299,13 +378,14 @@ void Engine::CreatePipeline() {
     meshConstants.Descriptor.RegisterSpace = 0;
     meshConstants.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // 1: PS의 t1~t3. 텍스처는 view가 있어야 읽을 수 있으므로 힙의 칸을
-    // 가리키는 디스크립터 테이블로 둔다. 모든 드로우가 같은 세 장을 쓰므로
-    // 연속 3칸을 테이블 하나로 묶는다.
+    // 1: PS의 t0~t3. 텍스처는 view가 있어야 읽을 수 있으므로 힙의 칸을
+    // 가리키는 디스크립터 테이블로 둔다. 모든 드로우가 같은 네 장(텍스처 세
+    // 장과 그림자 맵)을 쓰므로 연속 4칸을 테이블 하나로 묶는다. 힙 칸 번호와
+    // t 번호가 같다(Engine.h의 칸 배치).
     D3D12_DESCRIPTOR_RANGE textureRange = {};
     textureRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    textureRange.NumDescriptors = kTextureCount;
-    textureRange.BaseShaderRegister = 1; // t1
+    textureRange.NumDescriptors = kTableSize;
+    textureRange.BaseShaderRegister = 0; // t0
     textureRange.RegisterSpace = 0;
     textureRange.OffsetInDescriptorsFromTableStart = 0;
 
@@ -323,25 +403,46 @@ void Engine::CreatePipeline() {
     sceneConstants.Descriptor.RegisterSpace = 0;
     sceneConstants.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    // s0: 바꿀 일이 없는 샘플러라 루트 시그니처에 정적 샘플러로 넣는다.
-    // 샘플러 힙과 바인딩 호출이 필요 없다.
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MaxAnisotropy = 1;
-    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0; // s0
-    sampler.RegisterSpace = 0;
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // 바꿀 일이 없는 샘플러라 루트 시그니처에 정적 샘플러로 넣는다. 샘플러
+    // 힙과 바인딩 호출이 필요 없다.
+    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
+
+    // s0: 일반 텍스처용. 선형 보간하고 바깥은 반복한다.
+    D3D12_STATIC_SAMPLER_DESC &linearWrap = samplers[0];
+    linearWrap.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    linearWrap.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    linearWrap.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    linearWrap.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    linearWrap.MaxAnisotropy = 1;
+    linearWrap.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    linearWrap.MaxLOD = D3D12_FLOAT32_MAX;
+    linearWrap.ShaderRegister = 0; // s0
+    linearWrap.RegisterSpace = 0;
+    linearWrap.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // s1: 그림자 맵용(13.4의 shadowPointSS). 깊이는 이웃 텍셀과 섞으면 어느
+    // 표면의 깊이도 아닌 값이 되므로 가장 가까운 텍셀 하나를 읽는다. 맵 밖은
+    // 테두리 색을 돌려준다. 정적 샘플러의 테두리 색은 검정, 투명, 흰색 셋
+    // 중에서만 고를 수 있어서(13.4는 100을 줬다) 흰색, 즉 깊이 1(가장 먼 값)로
+    // 둔다.
+    D3D12_STATIC_SAMPLER_DESC &shadowPoint = samplers[1];
+    shadowPoint.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    shadowPoint.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    shadowPoint.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    shadowPoint.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    shadowPoint.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    shadowPoint.MaxAnisotropy = 1;
+    shadowPoint.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    shadowPoint.MaxLOD = D3D12_FLOAT32_MAX;
+    shadowPoint.ShaderRegister = 1; // s1
+    shadowPoint.RegisterSpace = 0;
+    shadowPoint.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rootDesc = {};
     rootDesc.NumParameters = _countof(rootParameters);
     rootDesc.pParameters = rootParameters;
-    rootDesc.NumStaticSamplers = 1;
-    rootDesc.pStaticSamplers = &sampler;
+    rootDesc.NumStaticSamplers = _countof(samplers);
+    rootDesc.pStaticSamplers = samplers;
     rootDesc.Flags =
         D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
@@ -360,7 +461,25 @@ void Engine::CreatePipeline() {
                                         IID_PPV_ARGS(&m_rootSignature)),
           "CreateRootSignature");
 
-    // 두 패스가 같은 루트 시그니처를 쓰고, 상태만 다른 PSO를 하나씩 갖는다.
+    // 모든 패스가 같은 루트 시그니처를 쓰고, 상태만 다른 PSO를 하나씩 갖는다.
+
+    // 그림자 패스는 광원 시점에서 장면을 그려 깊이만 남긴다. 13.4는
+    // depthOnlyPSO와 흰색만 내는 DepthOnlyPS를 썼다. DX12의 PSO는 셰이더와 고정
+    // 기능 상태뿐 아니라, 그릴 때 묶일 렌더 타깃과 DSV의 수와 형식까지 미리
+    // 정한다.
+    // - VS는 메시 VS를 그대로 쓴다. b0의 view, projection 자리에 광원 행렬이
+    //   들어오면 광원 시점의 클립 좌표가 나온다.
+    // - 깊이는 래스터화가 SV_POSITION에서 구하고 출력 병합기가 테스트하고
+    //   쓰므로 PS가 없다.
+    // - 렌더 타깃 없이 DSV만 묶어 그리므로 렌더 타깃 형식은 UNKNOWN(0개)이다.
+    // - DSV 형식은 그림자 맵 DSV(CreateShadowMapViews())와 같은 D32_FLOAT다.
+    PipelineSettings shadow;
+    shadow.vertexShader = "MeshVertexShader.cso";
+    shadow.pixelShader = nullptr;
+    m_shadowPipeline =
+        CreateGraphicsPipeline(m_device.Get(), m_rootSignature.Get(),
+                               DXGI_FORMAT_UNKNOWN, kDepthFormat, shadow);
+
     // 하늘은 맨 먼저 깊이 없이 그리고, 구 안에서 보므로 안쪽 면(뒷면)을
     // 남기도록 앞면을 버린다.
     PipelineSettings sky;
@@ -432,20 +551,59 @@ void Engine::CreateTextureViews() {
     Check(m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_srvHeap)),
           "CreateDescriptorHeap");
 
-    // 테이블이 t1부터 연속 3칸을 읽으므로 레지스터 순서대로 칸을 채운다.
+    // 테이블이 t0부터 연속 칸을 읽으므로 레지스터 순서대로 칸을 채운다. 칸
+    // 번호가 곧 t 번호다.
     m_srvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(
         D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     D3D12_CPU_DESCRIPTOR_HANDLE handle =
         m_srvHeap->GetCPUDescriptorHandleForHeapStart();
     const Texture *textures[kTextureCount] = {
-        &m_irradianceMap,  // t1
-        &m_environmentMap, // t2
-        &m_groundTexture,  // t3
+        &m_irradianceMap,  // t0
+        &m_environmentMap, // t1
+        &m_groundTexture,  // t2
     };
     for (const Texture *texture : textures) {
         texture->CreateShaderResourceView(m_device.Get(), handle);
         handle.ptr += m_srvDescriptorSize;
     }
+
+    // t3(kShadowMapSlot)은 그림자 맵이다. DSV 힙도 이미 있으므로 두 뷰를 함께
+    // 만든다.
+    CreateShadowMapViews();
+}
+
+// 그림자 맵 자원(m_shadowMap)은 CreateShadowMap()이 R32_TYPELESS로 만들었다.
+// 크기만 "32비트 하나"로 정하고 해석은 뷰에 맡긴 것이다. 같은 메모리를 다르게
+// 해석하는 뷰 두 개를 각자의 힙 칸에 쓴다. 뷰 하나에는 "어느 자원을"과
+// "어떻게 해석하나"가 함께 들어간다. 자원이 TYPELESS라 desc 대신 nullptr를
+// 넘기면(CreateDepthBuffer()처럼 "자원 형식 그대로") 실패하고, D32_FLOAT는
+// DSV 전용 형식이라 SRV에 쓸 수 없다.
+//
+// 디스크립터는 참조 카운트가 없는 바이트라, 칸을 써도 자원을 붙잡지 않는다.
+// m_shadowMap이 엔진과 수명이 같아서 문제가 없다.
+void Engine::CreateShadowMapViews() {
+    // SRV: 메시 PS가 t3에서 float 하나로 읽을 때의 해석이다.
+    D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+    desc.Format = DXGI_FORMAT_R32_FLOAT;
+    desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    desc.Texture2D.MipLevels = 1;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE srv =
+        m_srvHeap->GetCPUDescriptorHandleForHeapStart();
+    srv.ptr += SIZE_T(kShadowMapSlot) * m_srvDescriptorSize;
+    m_device->CreateShaderResourceView(m_shadowMap.Get(), &desc, srv);
+
+    // DSV: 그림자 패스가 깊이를 쓸 때의 해석이다.
+    D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
+    dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+    dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+    dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv =
+        m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
+    dsv.ptr += SIZE_T(kShadowDepthSlot) * m_dsvDescriptorSize;
+    m_device->CreateDepthStencilView(m_shadowMap.Get(), &dsvDesc, dsv);
 }
 
 void Engine::InitializeGui() {
@@ -524,21 +682,26 @@ void Engine::BuildGui() {
                 XMConvertToDegrees(m_camera.Pitch()));
     ImGui::TextDisabled("Hold RMB to look, WASD/QE to move, Shift: fast");
 
-    // 조명이다. View를 Final 말고 다른 것으로 바꾸면 점광원 하나에 대한 BRDF
-    // 중간값 하나만 색으로 보여 준다.
+    // 조명이다. View를 Final 말고 다른 것으로 바꾸면 중간값 하나만 색으로
+    // 보여 준다. Spot factor는 원뿔 감쇠, Shadow factor는 그림자 판정(1은 빛,
+    // 0은 그림자)이다.
     ImGui::Separator();
     LightingSettings &lighting = m_lighting;
     ImGui::Combo("View", &lighting.debugView,
                  "Final\0F (Fresnel)\0D (GGX)\0G (Smith)\0kDiffuse\0"
-                 "Diffuse BRDF\0Specular BRDF\0BRDF\0");
-    ImGui::DragFloat3("Light position", &lighting.pointPosition.x, 0.02f);
-    ImGui::ColorEdit3("Light color", &lighting.pointColor.x);
-    ImGui::SliderFloat("Light intensity", &lighting.pointIntensity, 0.0f, 20.0f,
+                 "Diffuse BRDF\0Specular BRDF\0BRDF\0Spot factor\0"
+                 "Shadow factor\0");
+    ImGui::DragFloat3("Light position", &lighting.position.x, 0.02f);
+    ImGui::DragFloat3("Light target", &lighting.target.x, 0.02f);
+    ImGui::ColorEdit3("Light color", &lighting.color.x);
+    ImGui::SliderFloat("Light intensity", &lighting.intensity, 0.0f, 20.0f,
                        "%.2f");
-    ImGui::SliderFloat("Fall-off start", &lighting.pointFallOffStart, 0.0f,
-                       lighting.pointFallOffEnd, "%.1f");
-    ImGui::SliderFloat("Fall-off end", &lighting.pointFallOffEnd,
-                       lighting.pointFallOffStart + 0.1f, 50.0f, "%.1f");
+    ImGui::SliderFloat("Spot power", &lighting.spotPower, 1.0f, 128.0f, "%.1f",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::SliderFloat("Fall-off start", &lighting.fallOffStart, 0.0f,
+                       lighting.fallOffEnd, "%.1f");
+    ImGui::SliderFloat("Fall-off end", &lighting.fallOffEnd,
+                       lighting.fallOffStart + 0.1f, 50.0f, "%.1f");
     ImGui::End();
 
     ImGui::Render();
@@ -620,11 +783,107 @@ void Engine::Render() {
     WaitForFenceValue(frame.fenceValue);
     frame.ResetConstants();
 
+    // 한 프레임은 두 패스다. 1) 그림자 패스가 광원 시점의 깊이를 그림자 맵에
+    // 쓰고, 2) 메인 패스가 카메라 시점에서 장면을 그리며 메시 PS가 그 그림자
+    // 맵을 읽는다. 커맨드 리스트는 그림자 PSO로 시작한다.
     Check(frame.commandAllocator->Reset(), "ID3D12CommandAllocator::Reset");
-    Check(
-        m_commandList->Reset(frame.commandAllocator.Get(), m_skyPipeline.Get()),
-        "ID3D12GraphicsCommandList::Reset");
+    Check(m_commandList->Reset(frame.commandAllocator.Get(),
+                               m_shadowPipeline.Get()),
+          "ID3D12GraphicsCommandList::Reset");
 
+    // ---- 두 패스가 함께 쓰는 바인딩 ----
+    // 루트 시그니처, 힙, 테이블, b1은 PSO를 바꿔도 남으므로 프레임 처음에 한
+    // 번 묶는다(ImGui 백엔드는 자기 것을 묶으므로 맨 마지막에 그린다).
+    m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
+
+    // 텍스처 테이블은 모든 드로우가 같으므로 프레임마다 한 번만 설정한다.
+    // 테이블은 묶인 셰이더 가시 힙 안의 칸을 가리키므로 힙을 먼저 묶는다.
+    // 그림자 패스 동안 t3의 그림자 맵은 아직 깊이를 쓰는 상태지만, 그림자
+    // 패스의 셰이더가 t3을 읽지 않으면 테이블이 그 칸을 가리키기만 해서는
+    // 문제가 없다. 상태가 맞아야 하는 때는 셰이더가 실제로 읽는 드로우다.
+    ID3D12DescriptorHeap *heaps[] = {m_srvHeap.Get()};
+    m_commandList->SetDescriptorHeaps(1, heaps);
+    m_commandList->SetGraphicsRootDescriptorTable(
+        kRootTextures, m_srvHeap->GetGPUDescriptorHandleForHeapStart());
+    m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    const XMVECTOR eye = m_camera.Position();
+    const XMMATRIX view = m_camera.View();
+    const XMMATRIX projection =
+        XMMatrixPerspectiveFovLH(2.0f * std::atan(0.5f / 0.8f),
+                                 float(kWidth) / float(kHeight), 0.01f, 100.0f);
+
+    // 스포트라이트는 위치와 겨눈 점으로 방향을 정한다. 두 점이 겹치면 방향이
+    // 없으므로 바로 아래를 겨눈다.
+    const XMVECTOR lightPosition = XMLoadFloat3(&m_lighting.position);
+    XMVECTOR lightDirection = XMLoadFloat3(&m_lighting.target) - lightPosition;
+    if (XMVectorGetX(XMVector3LengthSq(lightDirection)) < 1e-8f)
+        lightDirection = XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f);
+    lightDirection = XMVector3Normalize(lightDirection);
+
+    // 광원 행렬은 두 곳에 들어간다. 그림자 패스는 드로우별 b0의 view,
+    // projection으로 받아 장면을 광원 시점에서 그리고, 메시 PS는 b1의
+    // spotLight.viewProj로 받아 픽셀을 같은 기준으로 다시 투영한다.
+    XMMATRIX lightView;
+    XMMATRIX lightProjection;
+    MakeSpotLightMatrices(lightPosition, lightDirection, lightView,
+                          lightProjection);
+
+    // 장면 데이터(b1)는 모든 드로우가 같으므로 프레임마다 한 번 쓰고 한 번
+    // 연결한다. 루트 인자는 다시 설정할 때까지 이후 드로우에 남는다.
+    SceneConstants scene = {};
+    XMStoreFloat3(&scene.eyeWorld, eye);
+    scene.debugView = m_lighting.debugView;
+    SpotLight &spot = scene.spotLight;
+    spot.position = m_lighting.position;
+    XMStoreFloat3(&spot.radiance,
+                  XMLoadFloat3(&m_lighting.color) * m_lighting.intensity);
+    spot.fallOffStart = m_lighting.fallOffStart;
+    spot.fallOffEnd = m_lighting.fallOffEnd;
+    XMStoreFloat3(&spot.direction, lightDirection);
+    spot.spotPower = m_lighting.spotPower;
+    XMStoreFloat4x4(&spot.viewProj,
+                    XMMatrixTranspose(lightView * lightProjection));
+    m_commandList->SetGraphicsRootConstantBufferView(
+        kRootSceneConstants, frame.WriteConstants(&scene, sizeof(scene)));
+
+    // ---- 1. 그림자 패스: 광원 시점의 깊이를 그림자 맵에 남긴다 ----
+    // 13.4 [읽기 3]의 쓰기 단계다. 그림자 맵은 프레임 경계에서 늘 DEPTH_WRITE
+    // 상태이므로 배리어 없이 바로 깊이를 쓴다. PSO는 Reset할 때
+    // m_shadowPipeline으로 시작했다. 아래 메인 패스가 자기 타깃, 뷰포트, PSO를
+    // 다시 묶으므로 이 패스가 바꾼 것을 되돌릴 필요는 없다.
+    D3D12_CPU_DESCRIPTOR_HANDLE shadowDsv =
+        m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
+    shadowDsv.ptr += SIZE_T(kShadowDepthSlot) * m_dsvDescriptorSize;
+
+    // 깊이 테스트는 LESS(가까운 것이 남음)라 가장 먼 값 1로 지운다. s1이 맵
+    // 밖에서 돌려주는 깊이(1)와도 같아서, "아무 표면도 없음"의 뜻이 맞는다.
+    m_commandList->ClearDepthStencilView(shadowDsv, D3D12_CLEAR_FLAG_DEPTH,
+                                         1.0f, 0, 0, nullptr);
+
+    // 렌더 타깃 없이 DSV만 묶는다(그림자 PSO의 렌더 타깃 0개와 짝이다).
+    m_commandList->OMSetRenderTargets(0, nullptr, FALSE, &shadowDsv);
+
+    // 래스터화가 백버퍼가 아니라 그림자 맵 전체를 덮게 한다.
+    const D3D12_VIEWPORT shadowViewport = {
+        0.0f, 0.0f, float(kShadowMapSize), float(kShadowMapSize), 0.0f, 1.0f};
+    const D3D12_RECT shadowScissor = {0, 0, LONG(kShadowMapSize),
+                                      LONG(kShadowMapSize)};
+    m_commandList->RSSetViewports(1, &shadowViewport);
+    m_commandList->RSSetScissorRects(1, &shadowScissor);
+
+    // 광원 시점에서 그린다. DrawScene()은 두 행렬을 b0의 view, projection으로
+    // 넣는다.
+    DrawScene(frame, lightView, lightProjection);
+
+    // 그림자 맵을 쓰기에서 읽기로 바꾼다. 위 그림자 패스가 깊이를 다 쓴 뒤,
+    // 아래 메시 PS가 t3으로 읽기 전이다. DX11은 같은 텍스처를 DSV에서 풀고
+    // SRV로 묶기만 하면 런타임이 위험을 알아서 막았다(13.4 [읽기 5]). DX12는
+    // 앱이 배리어로 알린다.
+    Transition(m_shadowMap.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
+               D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+    // ---- 2. 메인 패스: 카메라 시점에서 그리고 그림자 맵을 읽는다 ----
     ID3D12Resource *backBuffer = m_renderTargets[m_backBufferIndex].Get();
     Transition(backBuffer, D3D12_RESOURCE_STATE_PRESENT,
                D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -633,8 +892,9 @@ void Engine::Render() {
         m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
     rtv.ptr += SIZE_T(m_backBufferIndex) * m_rtvDescriptorSize;
 
-    const D3D12_CPU_DESCRIPTOR_HANDLE dsv =
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv =
         m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
+    dsv.ptr += SIZE_T(kMainDepthSlot) * m_dsvDescriptorSize;
 
     // 깊이는 가장 먼 값(1.0)으로 지워서, 처음 그리는 픽셀은 항상 통과하게 한다.
     const float clearColor[] = {0.0f, 0.2f, 0.4f, 1.0f};
@@ -651,53 +911,64 @@ void Engine::Render() {
     m_commandList->RSSetViewports(1, &viewport);
     m_commandList->RSSetScissorRects(1, &scissor);
 
-    m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
-
-    // 텍스처 테이블은 모든 드로우가 같으므로 프레임마다 한 번만 설정한다.
-    // 테이블은 묶인 셰이더 가시 힙 안의 칸을 가리키므로 힙을 먼저 묶는다.
-    ID3D12DescriptorHeap *heaps[] = {m_srvHeap.Get()};
-    m_commandList->SetDescriptorHeaps(1, heaps);
-    m_commandList->SetGraphicsRootDescriptorTable(
-        kRootTextures, m_srvHeap->GetGPUDescriptorHandleForHeapStart());
-    m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-    const XMVECTOR eye = m_camera.Position();
-    const XMMATRIX view = m_camera.View();
-    const XMMATRIX projection =
-        XMMatrixPerspectiveFovLH(2.0f * std::atan(0.5f / 0.8f),
-                                 float(kWidth) / float(kHeight), 0.01f, 100.0f);
-
-    // 장면 데이터(b1)는 모든 드로우가 같으므로 프레임마다 한 번 쓰고 한 번
-    // 연결한다. 루트 인자는 다시 설정할 때까지 이후 드로우에 남는다.
-    SceneConstants scene = {};
-    XMStoreFloat3(&scene.eyeWorld, eye);
-    scene.debugView = m_lighting.debugView;
-    scene.pointLight.position = m_lighting.pointPosition;
-    XMStoreFloat3(&scene.pointLight.radiance,
-                  XMLoadFloat3(&m_lighting.pointColor) *
-                      m_lighting.pointIntensity);
-    scene.pointLight.fallOffStart = m_lighting.pointFallOffStart;
-    scene.pointLight.fallOffEnd = m_lighting.pointFallOffEnd;
-    m_commandList->SetGraphicsRootConstantBufferView(
-        kRootSceneConstants, frame.WriteConstants(&scene, sizeof(scene)));
-
-    // 하늘: 맨 먼저 깊이 없이 그린다. 커맨드 리스트를 Reset할 때 스카이 PSO로
-    // 시작했다. 뷰에서 이동을 빼서 하늘 구가 늘 카메라 중심에 있게 하면,
-    // 카메라가 움직여도 하늘은 무한히 먼 것처럼 따라온다. 반지름 1 구를 10배로
-    // 키워 near(0.01)와 far(100) 사이에 둔다.
+    // 하늘: 맨 먼저 깊이 없이 그린다. 뷰에서 이동을 빼서 하늘 구가 늘 카메라
+    // 중심에 있게 하면, 카메라가 움직여도 하늘은 무한히 먼 것처럼 따라온다.
+    // 반지름 1 구를 10배로 키워 near(0.01)와 far(100) 사이에 둔다.
+    m_commandList->SetPipelineState(m_skyPipeline.Get());
     XMMATRIX skyView = view;
     skyView.r[3] = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
     DrawMesh(frame, m_sphere,
              MakeMeshConstants(XMMatrixScaling(10.0f, 10.0f, 10.0f), skyView,
                                projection));
 
-    // 구 격자를 먼저, 바닥을 마지막에 그린다. 깊이 테스트가 있어서 그리는
-    // 순서와 상관없이 카메라에 가까운 것이 남는다. 하늘은 깊이를 쓰지
-    // 않았으므로 깊이 버퍼는 클리어 값 그대로이고, 이 메시들은 하늘 위에
-    // 덮인다.
+    // 구 격자와 바닥. 깊이 테스트가 있어서 그리는 순서와 상관없이 카메라에
+    // 가까운 것이 남는다. 하늘은 깊이를 쓰지 않았으므로 깊이 버퍼는 클리어 값
+    // 그대로이고, 이 메시들은 하늘 위에 덮인다. 메시 PS가 그림자 맵(t3)을
+    // 읽는 것은 여기서부터다.
     m_commandList->SetPipelineState(m_meshPipeline.Get());
-    // 픽셀은 자기 표면의 재질만 읽으므로 재질을 드로우별 b0에 직접 넣는다.
-    // 구는 바닥에 닿도록 중심을 반지름 높이에 둔다.
+    DrawScene(frame, view, projection);
+
+    // UI는 장면 위에 마지막으로 그린다. 백엔드는 자기 PSO, 루트 시그니처,
+    // 테이블을 묶으므로 이 뒤에 장면을 더 그리려면 엔진 것을 다시 묶어야 한다.
+    // 힙은 위에서 묶은 m_srvHeap을 그대로 쓴다.
+    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), m_commandList.Get());
+
+    // ---- 프레임 끝: 자원을 프레임 경계의 상태로 되돌린다 ----
+    Transition(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET,
+               D3D12_RESOURCE_STATE_PRESENT);
+
+    // 그림자 맵을 다음 프레임이 시작할 상태(DEPTH_WRITE)로 되돌린다. 상태는
+    // 커맨드 리스트를 넘어 이어지므로, 이 리스트가 끝날 때의 상태가 다음
+    // 리스트의 출발 상태다. 배리어도 리스트에 기록하는 명령이라 Close() 전에
+    // 둔다. 위 백버퍼 배리어가 같은 일을 백버퍼에 한다.
+    //
+    // 이 배리어를 빼면 두 번째 프레임부터 기본 디버그 레이어가 "배리어의
+    // before 상태가 자원의 실제 상태와 다르다"는 오류를 낸다. 반대로 두
+    // 배리어를 모두 빼면 기본 디버그 레이어는 조용하다. 디스크립터 테이블로
+    // 읽는 자원의 상태는 GPU 기반 검증(kEnableGpuBasedValidation)만 잡는다
+    // (Incompatible texture barrier layout).
+    Transition(m_shadowMap.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+               D3D12_RESOURCE_STATE_DEPTH_WRITE);
+
+    Check(m_commandList->Close(), "Close");
+
+    ID3D12CommandList *commandLists[] = {m_commandList.Get()};
+    m_commandQueue->ExecuteCommandLists(1, commandLists);
+
+    Check(m_swapChain->Present(1, 0), "Present");
+
+    // 이 프레임을 제출한 번호를 기억해 두고, 기다리지 않고 넘어간다.
+    frame.fenceValue = Signal();
+    m_backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
+    m_frameIndex = (m_frameIndex + 1) % kFrameCount;
+}
+
+void Engine::DrawScene(FrameResource &frame, FXMMATRIX view,
+                       CXMMATRIX projection) {
+    // 구 격자를 먼저, 바닥을 마지막에 그린다. 픽셀은 자기 표면의 재질만
+    // 읽으므로 재질을 드로우별 b0에 직접 넣는다. 그림자 패스에서는 PS가 재질을
+    // 읽지 않지만 같은 상수를 그대로 쓴다. 구는 바닥에 닿도록 중심을 반지름
+    // 높이에 둔다.
     for (const GridRow &row : kGridRows) {
         for (int column = 0; column < kGridColumns; ++column) {
             const float x = (column - (kGridColumns - 1) * 0.5f) * kGridSpacing;
@@ -714,7 +985,9 @@ void Engine::Render() {
         }
     }
 
-    // 정사각형은 -z를 향하므로 x축으로 90도 돌려 위를 향하게 눕힌다.
+    // 정사각형은 -z를 향하므로 x축으로 90도 돌려 위를 향하게 눕힌다. 바닥도
+    // 그림자 패스에서 깊이를 쓴다. 바닥에 그림자를 드리울 물체는 없지만,
+    // 메인 패스와 같은 장면을 그려 두 패스의 기준을 맞춘다.
     const XMMATRIX groundModel =
         XMMatrixScaling(kGroundHalfExtent, kGroundHalfExtent,
                         kGroundHalfExtent) *
@@ -726,25 +999,6 @@ void Engine::Render() {
     groundMaterial.useAlbedoTexture = 1;
     DrawMesh(frame, m_ground,
              MakeMeshConstants(groundModel, view, projection, groundMaterial));
-
-    // UI는 장면 위에 마지막으로 그린다. 백엔드는 자기 PSO, 루트 시그니처,
-    // 테이블을 묶으므로 이 뒤에 장면을 더 그리려면 엔진 것을 다시 묶어야 한다.
-    // 힙은 위에서 묶은 m_srvHeap을 그대로 쓴다.
-    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), m_commandList.Get());
-
-    Transition(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET,
-               D3D12_RESOURCE_STATE_PRESENT);
-    Check(m_commandList->Close(), "Close");
-
-    ID3D12CommandList *commandLists[] = {m_commandList.Get()};
-    m_commandQueue->ExecuteCommandLists(1, commandLists);
-
-    Check(m_swapChain->Present(1, 0), "Present");
-
-    // 이 프레임을 제출한 번호를 기억해 두고, 기다리지 않고 넘어간다.
-    frame.fenceValue = Signal();
-    m_backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
-    m_frameIndex = (m_frameIndex + 1) % kFrameCount;
 }
 
 void Engine::DrawMesh(FrameResource &frame, const Mesh &mesh,

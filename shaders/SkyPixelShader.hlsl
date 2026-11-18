@@ -1,7 +1,7 @@
 #include "Common.hlsli"
 
-// 루트 파라미터 1의 테이블(t1~t3) 중 t2만 읽는다.
-TextureCube environmentMap : register(t2);
+// 루트 파라미터 1의 테이블(t0~t3) 중 t1만 읽는다.
+TextureCube environmentMap : register(t1);
 SamplerState linearWrapSampler : register(s0);
 
 // 큐브맵은 UV가 아니라 방향 벡터로 읽는다.

@@ -14,7 +14,8 @@ CreateGraphicsPipeline(ID3D12Device *device, ID3D12RootSignature *rootSignature,
     const std::vector<char> vertexShader =
         LoadCompiledShader(settings.vertexShader);
     const std::vector<char> pixelShader =
-        LoadCompiledShader(settings.pixelShader);
+        settings.pixelShader ? LoadCompiledShader(settings.pixelShader)
+                             : std::vector<char>();
 
     const D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,
@@ -29,11 +30,16 @@ CreateGraphicsPipeline(ID3D12Device *device, ID3D12RootSignature *rootSignature,
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
     desc.pRootSignature = rootSignature;
     desc.VS = {vertexShader.data(), vertexShader.size()};
+    // 빈 바이트코드(nullptr, 0)는 "이 단계 없음"이다.
     desc.PS = {pixelShader.data(), pixelShader.size()};
     desc.InputLayout = {inputLayout, _countof(inputLayout)};
     desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    desc.NumRenderTargets = 1;
-    desc.RTVFormats[0] = renderTargetFormat;
+    // 묶일 렌더 타깃의 수와 형식이 PSO와 맞아야 한다. 형식이 UNKNOWN이면
+    // 렌더 타깃 없이(OMSetRenderTargets(0, ...)) 그리는 패스다.
+    if (renderTargetFormat != DXGI_FORMAT_UNKNOWN) {
+        desc.NumRenderTargets = 1;
+        desc.RTVFormats[0] = renderTargetFormat;
+    }
     desc.SampleDesc.Count = 1;
     desc.SampleMask = UINT_MAX;
 

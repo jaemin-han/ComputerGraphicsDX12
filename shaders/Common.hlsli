@@ -26,13 +26,16 @@ cbuffer MeshConstants : register(b0)
     Material material;
 };
 
-// C++의 PointLight와 같은 배치다.
-struct PointLight
+// C++의 SpotLight와 같은 배치다.
+struct SpotLight
 {
     float3 position;
     float fallOffStart;
     float3 radiance; // 빛을 수직으로 받는 면에 들어오는 irradiance다.
     float fallOffEnd;
+    float3 direction; // 광원에서 비추는 쪽으로 가는 단위 벡터다.
+    float spotPower;  // 클수록 원뿔이 좁다.
+    matrix viewProj;  // 그림자 맵을 그린 광원의 view * projection이다.
 };
 
 // C++의 SceneConstants와 같은 배치다. 프레임마다 한 번 쓰고 모든 드로우가
@@ -41,7 +44,7 @@ cbuffer SceneConstants : register(b1)
 {
     float3 eyeWorld;
     int debugView;
-    PointLight pointLight;
+    SpotLight spotLight;
 };
 
 // 하늘 패스의 VS 출력이다. 큐브맵을 읽을 방향만 넘긴다.
