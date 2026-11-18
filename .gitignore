@@ -8,3 +8,6 @@ Computer.*/
 
 # vcpkg manifest install tree
 vcpkg_installed/
+
+# RenderDoc capture settings (local absolute paths)
+*.cap

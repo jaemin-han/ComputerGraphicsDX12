@@ -22,75 +22,50 @@ static const int DebugViewDiffuseBrdf = 5;    // kDiffuse * fDiff
 static const int DebugViewSpecularBrdf = 6;   // fSpec
 static const int DebugViewBrdf = 7;           // kDiffuse * fDiff + fSpec
 
+// 미세면 하나가 빛을 반사하는 비율 F다(Schlick 근사, 채널별 0~1). 정면 반사율
+// F0은 metallic 워크플로로 정한다. 비금속은 0.04, 금속은 albedo다. vDotH가 1이면
+// F0, 0이면 1(흰색)이다. 점광원에서 v·h는 n과 상관없어 구 전체에서 거의 같다.
 float3 Fresnel(float3 albedo, float metallic, float vDotH)
 {
-    // TODO(학습) 1: 미세면 하나가 빛을 반사하는 비율 F를 구한다.
-    // 입력: albedo(base color), metallic(0~1), vDotH(v·h, 0~1로 잘라서 들어온다).
-    // 출력: 채널별 반사율(0~1). 먼저 metallic 워크플로로 F0을 정하고, 그
-    //       F0에서 Schlick 근사로 F를 구한다. 5제곱 항을 그대로 쓸지 노트 7절의
-    //       근사로 바꿀지는 고른다.
-    // 조건: vDotH = 1이면 F0, vDotH = 0이면 1(흰색)이다.
-    // 확인: View를 F로 둔다. 빨간 구는 거의 검은 회색, 금 구는 금색이다.
-    //       Light position을 구 너머(z 8 근처)로 옮겨 l과 v가 마주 보게 하면
-    //       테두리만이 아니라 구 전체가 흰색 쪽으로 밝아진다.
     float3 F0 = lerp(0.04, albedo, metallic);
     float3 F = F0 + (1 - F0) * pow((1 - vDotH), 5);
-    
     return F;
 }
 
+// 법선이 h인 미세면의 밀도 D다(GGX). 식의 α는 roughness²이고, 1을 넘을 수 있다.
+// roughness 0이면 n·h = 1에서 0/0이 되므로 분모에 작은 값을 더해 NaN을 막는다.
+// roughness 1이면 어디서나 1/π다.
 float DistributionGGX(float nDotH, float roughness)
 {
-    // TODO(학습) 2: 법선이 h인 미세면의 밀도 D(GGX)를 구한다.
-    // 입력: nDotH(n·h, 0~1), roughness(재질의 슬라이더 값, 0~1).
-    // 출력: 0 이상의 밀도. 1을 넘을 수 있다.
-    // 조건: roughness를 식의 α로 바꾸는 방식은 노트 7절에서 정한 것을 쓴다.
-    //       roughness 0, nDotH 1에서도 NaN이 나오면 안 된다.
-    // 확인: View를 D로 둔다(1을 넘으면 흰색으로 잘린다). 맨 왼쪽 구는 검정,
-    //       0.25 구는 작고 하얀 점, 맨 오른쪽 구는 어디서나 회색 0.318이다.
-    
     float alphaSq = pow(roughness, 4);
-    
     float D = alphaSq / (PI * pow(nDotH * nDotH * (alphaSq - 1) + 1, 2) + 1e-7);
-    
     return D;
 }
 
+// 한 방향(l이나 v)에서 미세면이 가려지지 않은 비율이다(Schlick-GGX). k ≥ 0.125라
+// 분모가 0이 되지 않는다.
 float SchlickG1(float nDotX, float k)
 {
     return nDotX / (nDotX * (1 - k) + k);
-
 }
 
+// 미세면이 빛 쪽과 눈 쪽 모두에서 가려지지 않은 비율 G다(Smith 분리형, 0~1). k는
+// 점광원용 (roughness + 1)² / 8이다. IBL은 다른 k(α / 2)를 쓴다.
 float GeometrySmith(float nDotL, float nDotV, float roughness)
 {
-    // TODO(학습) 3: 미세면이 빛 쪽과 눈 쪽에서 가려지지 않은 비율 G를 구한다.
-    // 입력: nDotL(n·l), nDotV(n·v), 둘 다 0~1로 잘라서 들어온다.
-    //       roughness(재질의 슬라이더 값, 0~1).
-    // 출력: 0~1.
-    // 조건: Smith 분리형이다. 근사식과 그 안의 상수는 노트 7절에서 정한 점광원
-    //       용을 쓴다.
-    // 확인: View를 G로 둔다. 대부분 흰색이고, 광원 반대쪽 경계와 실루엣
-    //       근처에서만 어두워진다. 오른쪽(거친) 구일수록 더 넓게 어둡다.
     float k = pow(roughness + 1, 2) / 8;
-    
     return SchlickG1(nDotL, k) * SchlickG1(nDotV, k);
 }
 
+// 광원 하나에서 와서 눈으로 나가는 radiance다. l은 표면에서 광원으로 가는 단위
+// 벡터, irradiance는 감쇠까지 곱한 광원 값이다. 광원이 여럿이면 main이 더한다.
+// 반사율 방정식에서 점광원 하나만 남기면 BRDF × irradiance × n·l이다. BRDF는
+// 확산(kDiffuse · albedo / π)과 정반사(DFG / (4 n·l n·v))의 합이고, kDiffuse는
+// 정반사하고 남은 빛 중 금속이 흡수하지 않은 몫이다. n·l을 saturate하므로 표면
+// 뒤에서 오는 빛은 0이다.
 float3 DirectLighting(float3 albedo, float metallic, float roughness,
                       float3 n, float3 v, float3 l, float3 irradiance)
 {
-    // TODO(학습) 4: 광원 하나에서 와서 눈으로 나가는 radiance를 구한다.
-    // 입력: albedo, metallic, roughness(재질), n, v, l(단위 벡터, l은 표면에서
-    //       광원으로), irradiance(감쇠까지 곱한 광원 값).
-    // 출력: 이 광원의 기여(radiance). 광원이 여럿이면 main이 더한다.
-    // 조건: 위 세 함수를 쓴다. diffuse와 specular의 에너지 분배와 관례(②: BRDF
-    //       에 1/π를 남긴다)는 노트대로다. 표면 뒤에서 오는 빛은 0이고, 분모가
-    //       0이 되지 않게 한다.
-    // 확인: View를 Final로 둔다. 빨간 구는 빨간 몸통에 흰 하이라이트, 금 구는
-    //       하이라이트 말고는 거의 검정이다. 오른쪽으로 갈수록 하이라이트가
-    //       넓고 어두워지고, 맨 왼쪽 열의 두 구에는 하이라이트가 없다. 바닥은
-    //       광원 아래가 밝다.
     float3 halfway = normalize(l + v);
     float nDotL = saturate(dot(n, l));
     float nDotV = saturate(dot(n, v));

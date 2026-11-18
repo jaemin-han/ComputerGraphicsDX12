@@ -8,7 +8,6 @@
 
 #include <chrono>
 #include <cmath>
-#include <filesystem>
 
 #include "Camera.h"
 #include "ConstantBuffers.h"
@@ -22,18 +21,9 @@ using Microsoft::WRL::ComPtr;
 // 객체를 갖고, 루트 시그니처와 PSO를 정하고, 한 프레임의 드로우를 기록한다.
 class Engine {
   public:
-    // 실행 인자로 정하는 시작 설정이다. main()이 채운다.
-    struct StartupOptions {
-        int debugView = 0;
-        // 비어 있지 않으면 몇 프레임 뒤 백버퍼를 이 경로에 PNG로 저장하고
-        // 종료한다. 포트폴리오와 비교 캡처를 같은 크기, 같은 설정으로 다시 찍는
-        // 도구다.
-        std::filesystem::path capturePath;
-    };
-
     ~Engine();
 
-    void Initialize(const StartupOptions &options);
+    void Initialize();
     int Run();
 
   private:
@@ -82,8 +72,6 @@ class Engine {
     void Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES before,
                     D3D12_RESOURCE_STATES after);
     void Render();
-    // 제출이 끝난 백버퍼(PRESENT 상태)를 읽어 m_capturePath에 PNG로 저장한다.
-    void SaveBackBuffer(ID3D12Resource *backBuffer);
     void DrawMesh(FrameResource &frame, const Mesh &mesh,
                   const MeshConstants &constants);
 
@@ -149,13 +137,6 @@ class Engine {
         int debugView = 0;
     };
     LightingSettings m_lighting;
-
-    // 캡처는 시작 직후가 아니라 이 프레임에 한다. 첫 프레임들은 ImGui 폰트
-    // 아틀라스를 만드는 등 준비가 섞이므로 몇 프레임 지나 장면이 안정된 뒤에
-    // 찍는다. 캡처하는 프레임은 UI를 그리지 않아 장면만 남는다.
-    static constexpr UINT64 kCaptureFrame = 5;
-    std::filesystem::path m_capturePath;
-    UINT64 m_renderedFrames = 0;
 
     // 구 격자 앞에서 두 줄 사이 (0, 0.4, 4.75)를 내려다본다. 높이 차 1.6,
     // 수평 거리 3.75다.

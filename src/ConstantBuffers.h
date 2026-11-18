@@ -50,9 +50,6 @@ struct SceneConstants {
     PointLight pointLight;
 };
 
-// debugView가 가질 수 있는 값의 수다.
-constexpr int kDebugViewCount = 8;
-
 static_assert(sizeof(Material) == 2 * 16, "Must match HLSL Material.");
 static_assert(sizeof(MeshConstants) == 18 * 16, "Must match HLSL b0.");
 static_assert(sizeof(PointLight) == 2 * 16, "Must match HLSL PointLight.");
