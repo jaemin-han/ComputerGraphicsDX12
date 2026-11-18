@@ -43,10 +43,15 @@ struct PointLight {
 // 장면 전체의 데이터다.
 struct SceneConstants {
     DirectX::XMFLOAT3 eyeWorld;
-    // 0이면 최종 색, 1~3이면 점광원에 대한 F, D, G 항 하나를 보여 준다.
+    // 0이면 최종 색, 1부터는 점광원 하나에 대한 BRDF 중간값 하나(F, D, G,
+    // kDiffuse, 확산 BRDF, 정반사 BRDF, BRDF 합)를 보여 준다. 번호는
+    // MeshPixelShader.hlsl의 DebugView 상수와 같다.
     int debugView;
     PointLight pointLight;
 };
+
+// debugView가 가질 수 있는 값의 수다.
+constexpr int kDebugViewCount = 8;
 
 static_assert(sizeof(Material) == 2 * 16, "Must match HLSL Material.");
 static_assert(sizeof(MeshConstants) == 18 * 16, "Must match HLSL b0.");

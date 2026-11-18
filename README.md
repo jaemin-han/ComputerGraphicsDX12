@@ -119,7 +119,13 @@ MSBuild.exe .\ComputerGraphicsDX12.sln /p:Configuration=Debug /p:Platform=x64 /m
 .\x64\Debug\ComputerGraphicsDX12.exe
 ```
 
-Release를 쓰려면 두 명령의 `Debug` 를 `Release` 로 바꾼다. 일반 PowerShell에서는 `& 'C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\amd64\MSBuild.exe'` 로 MSBuild를 호출할 수 있다.
+Release를 쓰려면 두 명령의 `Debug` 를 `Release` 로 바꾼다.
+
+실행 인자 `--view <번호>` 는 시작 디버그 뷰를(0 Final, 1 F, 2 D, 3 G, 4 kDiffuse, 5 확산 BRDF, 6 정반사 BRDF, 7 BRDF), `--capture <경로>` 는 5번째 프레임의 장면(UI 제외)을 1920×1080 PNG로 저장하고 종료하게 한다. 백버퍼를 DirectXTex `CaptureTexture` 로 읽으므로 창 테두리나 위에 겹친 창이 찍히지 않는다. 포트폴리오와 비교 캡처는 이것으로 찍는다(11/18 사용자 결정, 리드백은 학습 대상이 아닌 도구라 라이브러리에 맡김).
+
+```powershell
+.\x64\Debug\ComputerGraphicsDX12.exe --view 6 --capture specular.png
+``` 일반 PowerShell에서는 `& 'C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\amd64\MSBuild.exe'` 로 MSBuild를 호출할 수 있다.
 
 MSBuild는 FXC로 HLSL을 Shader Model 5.1로 컴파일하고 `.cso` 를 실행 파일 옆에 둔다. 새 `.hlsl` 은 `ComputerGraphicsDX12.vcxproj` 에 `FxCompile` 과 셰이더 단계에 맞는 `ShaderType` 을 등록하고 진입점은 `main` 으로 둔다. 공용 `.hlsli` 는 `None` 으로 등록한다.
 

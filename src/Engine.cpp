@@ -14,6 +14,9 @@
 #include <iostream>
 #include <stdexcept>
 
+#include <DirectXTex.h>
+#include <wincodec.h>
+
 #include <imgui.h>
 #include <imgui_impl_dx12.h>
 #include <imgui_impl_win32.h>
@@ -89,7 +92,12 @@ Engine::~Engine() {
         ShutdownGui();
 }
 
-void Engine::Initialize() {
+void Engine::Initialize(const StartupOptions &options) {
+    if (options.debugView < 0 || options.debugView >= kDebugViewCount)
+        throw std::runtime_error("debugView out of range");
+    m_lighting.debugView = options.debugView;
+    m_capturePath = options.capturePath;
+
     m_window = CreateAppWindow(kWidth, kHeight, L"ComputerGraphicsDX12");
     CreateDevice();
     CreateFrameResources();
@@ -524,12 +532,13 @@ void Engine::BuildGui() {
                 XMConvertToDegrees(m_camera.Pitch()));
     ImGui::TextDisabled("Hold RMB to look, WASD/QE to move, Shift: fast");
 
-    // 조명이다. View를 F, D, G로 바꾸면 점광원 하나에 대한 그 항만 색으로
-    // 보여 준다. 아직 채우지 않은 항은 마젠타다.
+    // 조명이다. View를 Final 말고 다른 것으로 바꾸면 점광원 하나에 대한 BRDF
+    // 중간값 하나만 색으로 보여 준다.
     ImGui::Separator();
     LightingSettings &lighting = m_lighting;
     ImGui::Combo("View", &lighting.debugView,
-                 "Final\0F (Fresnel)\0D (GGX)\0G (Smith)\0");
+                 "Final\0F (Fresnel)\0D (GGX)\0G (Smith)\0kDiffuse\0"
+                 "Diffuse BRDF\0Specular BRDF\0BRDF\0");
     ImGui::DragFloat3("Light position", &lighting.pointPosition.x, 0.02f);
     ImGui::ColorEdit3("Light color", &lighting.pointColor.x);
     ImGui::SliderFloat("Light intensity", &lighting.pointIntensity, 0.0f, 20.0f,
@@ -728,8 +737,13 @@ void Engine::Render() {
 
     // UI는 장면 위에 마지막으로 그린다. 백엔드는 자기 PSO, 루트 시그니처,
     // 테이블을 묶으므로 이 뒤에 장면을 더 그리려면 엔진 것을 다시 묶어야 한다.
-    // 힙은 위에서 묶은 m_srvHeap을 그대로 쓴다.
-    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), m_commandList.Get());
+    // 힙은 위에서 묶은 m_srvHeap을 그대로 쓴다. 캡처하는 프레임은 장면만
+    // 남기려고 UI를 그리지 않는다.
+    const bool capture =
+        !m_capturePath.empty() && ++m_renderedFrames == kCaptureFrame;
+    if (!capture)
+        ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(),
+                                      m_commandList.Get());
 
     Transition(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET,
                D3D12_RESOURCE_STATE_PRESENT);
@@ -738,12 +752,36 @@ void Engine::Render() {
     ID3D12CommandList *commandLists[] = {m_commandList.Get()};
     m_commandQueue->ExecuteCommandLists(1, commandLists);
 
+    // 같은 큐에 넣으므로 복사는 이 프레임의 드로우가 끝난 뒤에 실행된다.
+    // Present 뒤에는 백버퍼가 화면 출력 쪽으로 넘어가므로 그 전에 읽는다.
+    if (capture) {
+        SaveBackBuffer(backBuffer);
+        PostQuitMessage(0);
+    }
+
     Check(m_swapChain->Present(1, 0), "Present");
 
     // 이 프레임을 제출한 번호를 기억해 두고, 기다리지 않고 넘어간다.
     frame.fenceValue = Signal();
     m_backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
     m_frameIndex = (m_frameIndex + 1) % kFrameCount;
+}
+
+void Engine::SaveBackBuffer(ID3D12Resource *backBuffer) {
+    // 리드백 버퍼 생성, 복사, 배리어, 완료 대기는 DirectXTex가 한다. 캡처는
+    // 학습 대상이 아닌 도구라서 라이브러리에 맡긴다(사용자 결정, 11/18).
+    ScratchImage image;
+    Check(CaptureTexture(m_commandQueue.Get(), backBuffer, false, image,
+                         D3D12_RESOURCE_STATE_PRESENT,
+                         D3D12_RESOURCE_STATE_PRESENT),
+          "CaptureTexture");
+    // 알파는 버리고 RGB만 저장한다. 백버퍼는 UNORM이라 셰이더가 쓴 값이
+    // 그대로 PNG 바이트가 된다.
+    Check(SaveToWICFile(*image.GetImage(0, 0, 0), WIC_FLAGS_NONE,
+                        GetWICCodec(WIC_CODEC_PNG), m_capturePath.c_str(),
+                        &GUID_WICPixelFormat24bppBGR),
+          "SaveToWICFile");
+    std::cout << "Saved " << m_capturePath.string() << std::endl;
 }
 
 void Engine::DrawMesh(FrameResource &frame, const Mesh &mesh,

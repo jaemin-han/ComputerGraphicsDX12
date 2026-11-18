@@ -10,16 +10,17 @@ SamplerState linearWrapSampler : register(s0);
 
 static const float PI = 3.14159265f;
 
-// b1의 debugView 값이다. Final 말고는 점광원 하나에 대한 항 하나만 색으로
-// 보여 준다.
+// b1의 debugView 값이다. Final 말고는 점광원 하나에 대한 BRDF 중간값 하나를
+// 광원 값과 n·l을 곱하기 전 그대로 색으로 보여 준다. 1을 넘는 값은 백버퍼에
+// 쓸 때 잘려 흰색이 된다.
 static const int DebugViewFinal = 0;
 static const int DebugViewFresnel = 1;
 static const int DebugViewDistribution = 2;
 static const int DebugViewGeometry = 3;
-
-// 아직 채우지 않은 TODO가 돌려주는 색이다. F, D, G는 음수(-1)를 돌려주고
-// 디버그 뷰가 그것을 이 색으로 칠한다.
-static const float3 Unfinished = float3(1.0f, 0.0f, 1.0f);
+static const int DebugViewDiffuseWeight = 4;  // kDiffuse
+static const int DebugViewDiffuseBrdf = 5;    // kDiffuse * fDiff
+static const int DebugViewSpecularBrdf = 6;   // fSpec
+static const int DebugViewBrdf = 7;           // kDiffuse * fDiff + fSpec
 
 float3 Fresnel(float3 albedo, float metallic, float vDotH)
 {
@@ -32,7 +33,10 @@ float3 Fresnel(float3 albedo, float metallic, float vDotH)
     // 확인: View를 F로 둔다. 빨간 구는 거의 검은 회색, 금 구는 금색이다.
     //       Light position을 구 너머(z 8 근처)로 옮겨 l과 v가 마주 보게 하면
     //       테두리만이 아니라 구 전체가 흰색 쪽으로 밝아진다.
-    return -1.0f;
+    float3 F0 = lerp(0.04, albedo, metallic);
+    float3 F = F0 + (1 - F0) * pow((1 - vDotH), 5);
+    
+    return F;
 }
 
 float DistributionGGX(float nDotH, float roughness)
@@ -44,7 +48,18 @@ float DistributionGGX(float nDotH, float roughness)
     //       roughness 0, nDotH 1에서도 NaN이 나오면 안 된다.
     // 확인: View를 D로 둔다(1을 넘으면 흰색으로 잘린다). 맨 왼쪽 구는 검정,
     //       0.25 구는 작고 하얀 점, 맨 오른쪽 구는 어디서나 회색 0.318이다.
-    return -1.0f;
+    
+    float alphaSq = pow(roughness, 4);
+    
+    float D = alphaSq / (PI * pow(nDotH * nDotH * (alphaSq - 1) + 1, 2) + 1e-7);
+    
+    return D;
+}
+
+float SchlickG1(float nDotX, float k)
+{
+    return nDotX / (nDotX * (1 - k) + k);
+
 }
 
 float GeometrySmith(float nDotL, float nDotV, float roughness)
@@ -57,7 +72,9 @@ float GeometrySmith(float nDotL, float nDotV, float roughness)
     //       용을 쓴다.
     // 확인: View를 G로 둔다. 대부분 흰색이고, 광원 반대쪽 경계와 실루엣
     //       근처에서만 어두워진다. 오른쪽(거친) 구일수록 더 넓게 어둡다.
-    return -1.0f;
+    float k = pow(roughness + 1, 2) / 8;
+    
+    return SchlickG1(nDotL, k) * SchlickG1(nDotV, k);
 }
 
 float3 DirectLighting(float3 albedo, float metallic, float roughness,
@@ -74,24 +91,42 @@ float3 DirectLighting(float3 albedo, float metallic, float roughness,
     //       하이라이트 말고는 거의 검정이다. 오른쪽으로 갈수록 하이라이트가
     //       넓고 어두워지고, 맨 왼쪽 열의 두 구에는 하이라이트가 없다. 바닥은
     //       광원 아래가 밝다.
-    return Unfinished;
-}
+    float3 halfway = normalize(l + v);
+    float nDotL = saturate(dot(n, l));
+    float nDotV = saturate(dot(n, v));
+    float nDotH = saturate(dot(n, halfway));
+    float vDotH = saturate(dot(v, halfway));
 
-// 디버그 뷰가 고른 항 하나를 점광원에 대해 계산한다. 음수면 아직 채우지 않은
-// TODO라 마젠타로 칠한다.
-float3 DebugTerm(int view, float3 albedo, float metallic, float roughness,
-                 float3 n, float3 v, float3 l)
-{
-    float3 h = normalize(l + v);
-    float3 term;
-    if (view == DebugViewFresnel)
-        term = Fresnel(albedo, metallic, saturate(dot(v, h)));
-    else if (view == DebugViewDistribution)
-        term = DistributionGGX(saturate(dot(n, h)), roughness);
-    else
-        term = GeometrySmith(saturate(dot(n, l)), saturate(dot(n, v)),
-                             roughness);
-    return any(term < 0.0f) ? Unfinished : saturate(term);
+    float3 F = Fresnel(albedo, metallic, vDotH);
+    float3 kDiffuse = (1 - F) * (1 - metallic);
+    float3 fDiff = albedo / PI;
+
+    float D = DistributionGGX(nDotH, roughness);
+    float G = GeometrySmith(nDotL, nDotV, roughness);
+    float3 fSpec = D * F * G / max(4 * nDotL * nDotV, 1e-7);
+
+    float3 BRDF = kDiffuse * fDiff + fSpec;
+
+    float3 radiance = irradiance * BRDF * nDotL;
+
+    // 디버그 뷰는 위에서 구한 중간값 하나로 바꿔 돌려준다. 같은 값을 따로
+    // 다시 계산하지 않으므로 화면이 곧 이 함수의 중간 결과다. 중간에 return을
+    // 여러 번 두면 FXC가 초기화되지 않은 변수 경고(X4000)를 내서 값만 바꾼다.
+    if (debugView == DebugViewFresnel)
+        radiance = F;
+    else if (debugView == DebugViewDistribution)
+        radiance = D;
+    else if (debugView == DebugViewGeometry)
+        radiance = G;
+    else if (debugView == DebugViewDiffuseWeight)
+        radiance = kDiffuse;
+    else if (debugView == DebugViewDiffuseBrdf)
+        radiance = kDiffuse * fDiff;
+    else if (debugView == DebugViewSpecularBrdf)
+        radiance = fSpec;
+    else if (debugView == DebugViewBrdf)
+        radiance = BRDF;
+    return radiance;
 }
 
 float4 main(PixelShaderInput input) : SV_TARGET
@@ -111,11 +146,6 @@ float4 main(PixelShaderInput input) : SV_TARGET
     float3 toLight = pointLight.position - input.posWorld;
     float lightDistance = length(toLight);
     float3 l = toLight / lightDistance;
-
-    if (debugView != DebugViewFinal)
-        return float4(DebugTerm(debugView, albedo, material.metallic,
-                                material.roughness, n, v, l),
-                      1.0f);
 
     // 감쇠는 선형 창이다(노트 3절). 물리적인 점광원은 1/d²로 줄어 0이 되지
     // 않지만, 창을 씌우면 fallOffEnd 밖에서 기여가 정확히 0이라 광원의 영향
