@@ -11,3 +11,6 @@ vcpkg_installed/
 
 # RenderDoc capture settings (local absolute paths)
 *.cap
+
+# PIX GPU captures (large, kept locally)
+*.wpix
