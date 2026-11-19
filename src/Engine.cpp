@@ -420,27 +420,25 @@ void Engine::CreatePipeline() {
     linearWrap.RegisterSpace = 0;
     linearWrap.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    // s1: 그림자 맵용(13.4의 shadowPointSS). 깊이는 이웃 텍셀과 섞으면 어느
-    // 표면의 깊이도 아닌 값이 되므로 가장 가까운 텍셀 하나를 읽는다. 맵 밖은
-    // 테두리 색을 돌려준다. 정적 샘플러의 테두리 색은 검정, 투명, 흰색 셋
-    // 중에서만 고를 수 있어서(13.4는 100을 줬다) 흰색, 즉 깊이 1(가장 먼 값)로
-    // 둔다.
-    D3D12_STATIC_SAMPLER_DESC &shadowPoint = samplers[1];
-    shadowPoint.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
-    shadowPoint.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    shadowPoint.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    shadowPoint.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    shadowPoint.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    shadowPoint.MaxAnisotropy = 1;
-    shadowPoint.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-    shadowPoint.MaxLOD = D3D12_FLOAT32_MAX;
-    shadowPoint.ShaderRegister = 1; // s1
-    shadowPoint.RegisterSpace = 0;
-    shadowPoint.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // 그림자 맵의 깊이와 셰이더가 넘긴 기준 깊이를 비교한다.
+    // 맵 바깥의 텍셀은 테두리 색(흰색이므로 깊이 1)으로 비교한다.
+    D3D12_STATIC_SAMPLER_DESC &shadowCompare = samplers[1];
+    shadowCompare.Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+    shadowCompare.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    shadowCompare.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    shadowCompare.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    shadowCompare.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    shadowCompare.MaxAnisotropy = 1;
+    shadowCompare.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS;
+    shadowCompare.MaxLOD = D3D12_FLOAT32_MAX;
+    shadowCompare.ShaderRegister = 1;
+    shadowCompare.RegisterSpace = 0;
+    shadowCompare.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rootDesc = {};
     rootDesc.NumParameters = _countof(rootParameters);
     rootDesc.pParameters = rootParameters;
+    // 위에서 채운 정적 샘플러 배열을 루트 시그니처에 함께 넘긴다.
     rootDesc.NumStaticSamplers = _countof(samplers);
     rootDesc.pStaticSamplers = samplers;
     rootDesc.Flags =

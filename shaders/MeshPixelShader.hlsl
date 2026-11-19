@@ -12,12 +12,8 @@
 Texture2D groundTexture : register(t2);
 Texture2D shadowMap : register(t3);
 SamplerState linearWrapSampler : register(s0);
-// 그림자 맵 전용 샘플러다(루트 시그니처의 정적 샘플러). 깊이 값은 섞으면
-// 안 되므로 가장 가까운 텍셀 하나를 그대로 읽는다(필터링은 PCF 단계에서
-// 다룬다). UV가 [0, 1] 밖이면 텍스처 대신 테두리 색을 돌려주는데, 정적
-// 샘플러가 고를 수 있는 테두리 색은 검정, 투명, 흰색뿐이다. 흰색을 골랐으므로
-// 맵 밖에서 읽은 깊이는 1(가장 먼 값)이다. 13.4는 테두리 값으로 100을 줬다.
-SamplerState shadowPointSampler : register(s1);
+// 루트 시그니처의 그림자 맵용 정적 비교 샘플러다.
+SamplerComparisonState shadowCompareSampler : register(s1);
 
 static const float PI = 3.14159265f;
 
@@ -129,17 +125,12 @@ float SpotFactor(float3 l)
     return pow(lDotD, spotLight.spotPower);
 }
 
-// 그림자 맵으로 가림을 판정한다. 1이면 광원에서 보이는 표면(빛을 받음), 0이면
-// 다른 표면에 가려진 표면(그림자)이다. 13.4 [읽기 7]과 같은 일이고, 행렬과 맵이
-// 들어오는 길(b1, 디스크립터 테이블 t3, 정적 샘플러 s1)만 다르다.
+// 그림자 맵의 3×3 이웃에서 깊이를 비교해 스포트라이트의 가시성을 구한다.
+// 1은 완전히 밝은 영역, 0은 완전히 가려진 영역이다.
 //
 // - 비교하는 깊이는 그림자 패스가 기록한 값과 같은 기준인 NDC z다. 클립 z는
 //   w로 나누기 전이라 기준이 다르다.
-// - 맵 밖의 UV는 s1이 깊이 1을 돌려줘 빛을 받는 것으로 판정된다. 광원의
-//   투영(Engine.cpp의 MakeSpotLightMatrices)이 그림자를 드리우는 구를 모두
-//   담으므로, 맵 밖에는 가릴 물체가 없다.
-// - bias 1e-4로 바닥의 shadow acne는 없다. 구의 명암 경계(n·l ≈ 0) 근처에는
-//   acne 띠가 남지만, 그곳은 n·l이 0에 가까워 최종 화면에는 거의 보이지 않는다.
+// - 맵 바깥의 텍셀과 비교할 때는 s1의 테두리 깊이 1을 사용한다.
 float ShadowFactor(float3 posWorld)
 {
     // 월드 → 광원 클립 공간 → NDC다.
@@ -152,13 +143,30 @@ float ShadowFactor(float3 posWorld)
     float2 uv = posNDC.xy * 0.5f + 0.5f;
     uv.y = 1.0f - uv.y;
 
-    // 이 방향에서 광원에 가장 가까웠던 표면의 깊이다.
-    float shadowMapDepth = shadowMap.Sample(shadowPointSampler, uv).r;
+    // 같은 표면이 정밀도 오차로 자기를 가리지 않도록 기준 깊이를 당긴다.
+    float compareDepth = posDepth - 1e-4f;
 
-    // 같은 표면이 정밀도 오차로 자기를 가리지 않도록 bias를 둔다. 삼항
-    // 연산자로 써서 FXC가 분기 없이(lt, and) 컴파일한다. if로 써도 드라이버가
-    // 이 정도 분기는 select로 바꾸는 경우가 많아 차이는 거의 없다.
-    return posDepth < shadowMapDepth + 1e-4f ? 1.0f : 0.0f;
+    uint width, height;
+    shadowMap.GetDimensions(width, height);
+    float2 texelSize = 1.0f / float2(width, height);
+
+    // 중심 UV를 기준으로 한 텍셀 단위의 오프셋이다.
+    const int2 offsets[9] =
+    {
+        int2(-1, -1), int2(0, -1), int2(1, -1),
+        int2(-1,  0), int2(0,  0), int2(1,  0),
+        int2(-1,  1), int2(0,  1), int2(1,  1),
+    };
+
+    // 각 탭에서 선형 비교 샘플을 읽고, 9개 결과에 같은 가중치를 준다.
+    float shadowFactorSum = 0.0f;
+    for (int i = 0; i < 9; i++)
+    {
+        float2 sampleUV = uv + texelSize * offsets[i];
+        shadowFactorSum +=
+            shadowMap.SampleCmpLevelZero(shadowCompareSampler, sampleUV, compareDepth);
+    }
+    return shadowFactorSum / 9.0f;
 }
 
 float4 main(PixelShaderInput input) : SV_TARGET
