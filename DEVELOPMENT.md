@@ -1,4 +1,4 @@
-# ComputerGraphicsDX12
+# ComputerGraphicsDX12 개발 문서
 
 Part 2(DX11)에서 배운 내용을 DX12로 옮기며 학습하고, 결과를 렌더러 하나로 모아 포트폴리오로 쓰는 프로젝트다. 포트폴리오는 당장의 목표이고, 최종 목표는 이 엔진을 바탕으로 계속 학습하며 하고 싶은 기능을 구현해 가는 것이다(사용자 결정, 11/16). 그래서 한 번 만들고 마는 장면은 하드코딩해 두지 않고 git 기록(태그)으로 남긴다.
 
@@ -6,9 +6,10 @@ Part 2(DX11)에서 배운 내용을 DX12로 옮기며 학습하고, 결과를 �
 
 | 문서 | 역할 |
 | --- | --- |
-| `README.md` | 공용 문서. 프로젝트 상태, 인수인계, 빌드, 검증, 설계 규칙을 기록한다. |
-| `AGENTS.md` | Codex가 관리하는 전용 지침. 공용 규칙은 README를 참조한다. |
-| `CLAUDE.md` | Claude Code가 관리하는 전용 지침. 공용 규칙은 README를 참조한다. |
+| `README.md` | 처음 보는 사람을 위한 소개. 구현한 것, 빌드와 실행, 출처를 짧게 적는다. |
+| `DEVELOPMENT.md` | 공용 문서. 프로젝트 상태, 인수인계, 빌드, 검증, 설계 규칙을 기록한다. 11/21에 `README.md` 에서 이름을 바꿨다. |
+| `AGENTS.md` | Codex가 관리하는 전용 지침. 공용 규칙은 이 문서를 참조한다. |
+| `CLAUDE.md` | Claude Code가 관리하는 전용 지침. 공용 규칙은 이 문서를 참조한다. |
 
 ## 현재 상태
 
@@ -55,6 +56,19 @@ Part 2(DX11)에서 배운 내용을 DX12로 옮기며 학습하고, 결과를 �
 - 변경한 파일 — 11/18~19 그림자 맵: `src/ConstantBuffers.h`, `shaders/Common.hlsli`: `PointLight` 를 `SpotLight`(direction, spotPower, viewProj)로 바꿨다(b1 128바이트). `src/Engine.h`: 셰이더 가시 힙 칸 배치(`kShadowMapSlot`, `kTableSize`, `kGuiFontSlot` 4), DSV 힙 2칸(`kMainDepthSlot`, `kShadowDepthSlot`), `kShadowMapSize`, `m_shadowMap`, `m_shadowPipeline`, `CreateShadowMap`, `CreateShadowMapViews`, `DrawScene`, 스포트라이트 `LightingSettings` 를 더했다. `src/Engine.cpp`: `kEnableGpuBasedValidation`, `MakeSpotLightMatrices`, 그림자 맵 자원과 두 뷰, 루트 시그니처(t0~t3 테이블, 정적 샘플러 s1), 그림자 PSO를 더했다. `Render()` 는 그림자 패스 → 배리어 → 메인 패스 → 되돌리는 배리어 순서로 바꿨고, 구 격자와 바닥 그리기를 `DrawScene()` 으로 뗐다. ImGui 조명 UI에 Light target, Spot power, View의 Spot factor, Shadow factor를 더했다. `src/Pipeline.*`: PS 없음(`nullptr`)과 렌더 타깃 0개(`DXGI_FORMAT_UNKNOWN`)를 지원한다. `shaders/MeshPixelShader.hlsl`: `SpotFactor`, `ShadowFactor`, 디버그 뷰 8과 9, t2, t3, s1. `shaders/SkyPixelShader.hlsl`: t2를 t1로 옮겼다. 이전 단계의 변경 내용은 커밋 메시지와 아래 설계 메모에 있다.
 - 검증 결과 — 11/18~19 그림자 맵: Claude Code가 Debug 빌드(경고 없음) 뒤 실행해 캡처했다. 구 10개가 광원 반대쪽(오른쪽 뒤)으로 그림자를 드리우고, 앞줄 그림자 일부가 뒷줄 구 아래에 닿는다. Shadow factor 뷰에서 바닥은 acne 없이 깨끗하고, 구의 명암 경계에 acne 띠가 있다. stderr에 D3D12 메시지가 없고 종료 코드 0이다. GPU 기반 검증을 켜도 메시지가 없다. 두 배리어를 임시로 빼면 GPU 기반 검증만 t3에 `Incompatible texture barrier layout`(`DEPTH_STENCIL_WRITE`)을 내고, 기본 디버그 레이어는 조용하다. 되돌리는 배리어만 빼면 두 번째 프레임부터 기본 디버그 레이어가 before 상태 불일치 오류를 낸다. 그림자 맵 내용은 임시 빌드로 확인했다. 메인 패스를 광원 행렬과 1080 정사각형 뷰포트로 그리고 PS가 그 픽셀의 그림자 맵 깊이를 내게 했다(FOV 45°에서 구 세 개가 잘림). FXC O1로 `ShadowFactor` 를 컴파일하면 if는 `if_nz` 분기, 삼항 연산자는 `lt`, `and` 로 나온다(135 대 131 슬롯). 사람이 직접 광원을 옮겨 보는 확인은 미실행이다. 이전 단계 검증 중 남겨 둘 실험: 텍스처 배리어를 빼면 기본 디버그 레이어는 조용하고 GPU 기반 검증만 `Incompatible texture barrier layout` 을 낸다(`41ee201`). `WaitForGpu()` 전에 업로드 버퍼를 놓으면 디버그 레이어가 `CORRUPTION ... referenced by GPU operations in-flight` 를 내고, Release에서는 겉보기에 멀쩡하다(`f25dfbb`). DirectXTex는 `x64-windows` triplet이라 DLL로 링크된다. Codex가 둔 텍스처 자산(`assets/textures/`)은 SHA-256, DDS 헤더, PNG 크기, 큐브맵 이음매를 Claude Code가 검토했다.
 - 다음 할 일 — 고정 커널 PCF와 PIX의 해상도별 캡처 비교를 `현재 상태` 에 기록했다. 후속 계획은 패스별 GPU 타임스탬프와 실제 실행 중 여러 프레임의 변동 측정이다. 루트 상수는 PCF 커널 크기 같은 패스 인자가 생길 때 처음 쓴다(사용자 결정). 사용자 결정 필요: 바닥 PNG를 UNORM으로 읽을지 sRGB로 읽을지, 전체 계획의 판단 1 기준 조정, 레이 씬의 포트폴리오 포함 여부(Shadertoy 원본 라이선스 확인). 레이 PS 학습 맥락(확인 질문과 답)은 커밋 `4433334` 의 README 인수인계에 있다.
+
+## 다시 공부할 것
+
+2026-11-20 포트폴리오를 점검하며 사용자가 아직 설명하기 어렵다고 꼽은 부분이다. 면접 전에 코드를 다시 읽고 코드 없이 설명할 수 있게 만든다. 끝낸 항목은 지우거나 "확인함"으로 바꾼다.
+
+- **펜스와 프레임 자원:** 프레임 시작의 `WaitForFenceValue(frame.fenceValue)` 와 끝의 `Signal()` 이 각각 무엇을 보장하는지. 11/13 임시 계측(324프레임 중 320프레임에서 진행 중인 프레임이 2개)이 무엇을 셌고 왜 vsync 때문에 그렇게 나오는지. 코드: `src/Engine.cpp` 의 `Render()`, `src/FrameResource.*`.
+- **업로드 뒤 펜스 대기:** 텍스처 업로드에서 `ExecuteCommandLists` 뒤 펜스를 기다린 다음에야 업로드 버퍼를 놓는 이유. 코드: `src/Texture.cpp`, `Engine::LoadTextures()`.
+- **레이 씬 셰이더:** 0~4단계(재질 색, 로컬 셰이딩, 그림자 광선, 반사와 Fresnel, 광선 스택과 굴절). 코드는 로컬 태그 `ray-scene` 의 `shaders/RayScenePixelShader.hlsl` 이고, 당시 확인 질문은 커밋 `4433334` 의 README에 있다.
+- **카메라 roll:** 카메라 자기 축으로 회전을 누적하면 지평선이 기우는 이유와, yaw를 월드 y축으로 돌리면 기울지 않는 이유를 직관적으로 설명하기.
+- **GPU 기반 검증:** 직접 해 보기. `src/Engine.cpp` 의 `kEnableGpuBasedValidation` 을 켜고 그림자 맵 배리어를 하나씩 빼서, 기본 디버그 레이어와 GPU 기반 검증이 각각 무엇을 잡는지 확인한다.
+- **UPLOAD 힙과 DEFAULT 힙:** 정점·인덱스 버퍼를 UPLOAD 힙에 두면 무엇이 손해인지. 코드: `src/Util.cpp` 의 `CreateUploadBuffer`, `src/Mesh.cpp`.
+- **그림자 화질 용어:** shadow acne와 bias, peter panning, 그림자 맵 해상도가 낮을수록 PCF 경계가 넓게 번지는 이유.
+- **아직 모르는 개념:** 감마 보정과 sRGB, HDR과 톤 매핑, 밉맵, 노멀 매핑, IBL, 렌더 그래프, 바인드리스. 앞의 다섯 개는 포트폴리오의 "하지 않은 것"에 남아 있어 한 줄씩은 설명할 수 있어야 한다.
 
 ## 기준 자료
 
