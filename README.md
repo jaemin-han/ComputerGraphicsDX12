@@ -40,5 +40,5 @@ Release는 두 명령의 `Debug` 를 `Release` 로 바꾼다. Debug 빌드는 D3
 ## 출처와 AI 사용
 
 - 텍스처는 Poly Haven의 CC0 자산이다. 자세한 출처는 [assets/README.md](assets/README.md)에 있다.
-- 중간 단계의 레이 씬(`ray-scene` 태그)은 modern_shinobi의 Shadertoy [fsGcW3](https://www.shadertoy.com/view/fsGcW3) 장면을 홍정모 그래픽스 Part 2 예제를 거쳐 옮긴 것이다. 최종 버전에는 없다.
+- 중간 단계의 레이 씬(`ray-scene` 태그)은 modern_shinobi의 Shadertoy [fsGcW3](https://www.shadertoy.com/view/fsGcW3) 장면을 홍정모 그래픽스 강의 예제를 거쳐 옮긴 것이다. 최종 버전에는 없다.
 - 코딩 에이전트(Claude Code, Codex)와 함께 만들었다. 주요 설계 판단과 11/17 이후의 핵심 로직(BRDF 식, 그림자 패스의 판단 자리, PCF)은 내가, 나머지 구현과 통합은 에이전트가 맡았다. 자세한 분담은 포트폴리오 9쪽에 있다.

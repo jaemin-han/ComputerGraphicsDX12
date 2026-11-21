@@ -219,7 +219,7 @@
   </figure>
 
   <p class="summary" style="margin-top:3mm">프레임별 명령 할당자·펜스·상수 버퍼를 몇 벌 두고 언제 다시 쓸지 정하고, Cook-Torrance 직접광 BRDF와 스포트라이트 그림자 맵(광원 행렬, 배리어, 가림 판정, PCF)의 핵심 로직을 작성한 작은 DX12 렌더러.</p>
-  <p>홍정모 그래픽스 강의 Part 1·2(DX11)를 마친 뒤, Part 3에서 배울 기능을 DX12로 옮기며 만들었음. DX11에서 런타임이 대신하던 프레임 동기화, 상수 메모리, 자원 상태 전환을 직접 다루는 것이 목표였음. 삼각형 하나에서 시작해 직접광 PBR과 그림자까지 간 과정을 날짜순으로 적음.</p>
+  <p>홍정모 그래픽스 강의에서 DX11로 배운 기능을 DX12로 옮기며 만들었음. DX11에서 런타임이 대신하던 프레임 동기화, 상수 메모리, 자원 상태 전환을 직접 다루는 것이 목표였음. 삼각형 하나에서 시작해 직접광 PBR과 그림자까지 간 과정을 날짜순으로 적음.</p>
   <p>코딩 에이전트(Claude Code, Codex)와 함께 만들었음. 주요 설계 판단과 11/17 이후의 핵심 로직은 내가, 나머지 구현과 통합은 에이전트가 맡았음. 자세한 분담은 9쪽에 있음.</p>
 
   <div class="strip">
@@ -241,7 +241,7 @@
     </div>
     <div>
       <h3>하지 않은 것</h3>
-      <p>리사이즈(1920×1080 고정), 감마 보정·HDR·톤 매핑, IBL, 밉맵, 노멀 매핑, 모델 파일 로딩.</p>
+      <p>리사이즈(1920×1080 고정), 감마 보정·HDR·톤 매핑, IBL, 밉맵, 노멀 매핑, 모델 파일 로딩, 정점·인덱스 버퍼의 DEFAULT 힙 이동.</p>
     </div>
   </div>
 
@@ -294,7 +294,7 @@ swapChain-&gt;Present(1, 0);
           <dt class="pick">하나만</dt>
           <dd>큐, 커맨드 리스트, 펜스. 리스트는 명령을 할당자에 쓰므로 제출 직후 다른 할당자로 Reset할 수 있음. 펜스는 계속 커지는 숫자라 하나로 모든 프레임을 구분함.</dd>
           <dt class="pick">상수</dt>
-          <dd>처음에는 프레임마다 업로드 버퍼 하나를 256바이트 칸으로 나눠 i번 드로우는 i번 칸에 씀. 크기가 다른 장면 상수(336바이트)가 섞이면서, 지금까지 쓴 바이트 수로 다음 위치를 정하고 256바이트 배수로 올리는 선형 할당으로 바꿈. b0는 루트 CBV로 넘김.</dd>
+          <dd>처음에는 프레임마다 업로드 버퍼 하나를 256바이트 칸으로 나눠 i번 드로우는 i번 칸에 씀(b0는 행렬 4개로 딱 256바이트). 레이 씬(5단계)에서 프레임에 한 번 쓰는 장면 상수 b1(336바이트)이 생기고 b0도 256바이트를 넘게 되어, 지금까지 쓴 바이트 수로 다음 위치를 정하고 256바이트 배수로 올리는 선형 할당으로 바꿈. b0는 루트 CBV로 넘김.</dd>
           <dt>버린 안</dt>
           <dd>디스크립터 테이블로 CBV 넘기기. 드로우마다 뷰를 만들고 그 칸의 수명까지 관리해야 함.</dd>
         </dl>
@@ -333,7 +333,7 @@ m_frameIndex = (m_frameIndex + 1) % kFrameCount;</pre>
   <div class="stage">
     <div class="kicker">단계 3 · 11/13</div>
     <h2>3D 장면과 깊이 버퍼</h2>
-    <p class="lead">Part 2 예제의 배치대로 구 6개와 바닥을 그리고 노멀을 색으로 출력함. 깊이 버퍼 없이 먼저 그려 본 뒤 깊이 버퍼를 붙임.</p>
+    <p class="lead">구 6개와 바닥을 그리고 노멀을 색으로 출력함. 깊이 버퍼 없이 먼저 그려 본 뒤 깊이 버퍼를 붙임.</p>
     <div class="row c2">
       <figure>
         <img src="figures/03-no-depth.jpg" alt="초록 바닥이 구의 아랫부분을 덮은 화면">
@@ -390,18 +390,18 @@ m_frameIndex = (m_frameIndex + 1) % kFrameCount;</pre>
   <div class="stage">
     <div class="kicker">단계 5 · 11/14–15</div>
     <h2>레이 씬: 기반 기능을 한 장면에서 검증</h2>
-    <p class="lead">Part 2에서 DX11로 실습한 레이 트레이싱 장면을 DX12로 옮김. 업로드, 디스크립터 테이블, 상수 할당, PSO를 한 장면에서 모두 거치고, Part 2 실행 화면을 정답으로 비교할 수 있어서 첫 목표로 정함.</p>
+    <p class="lead">강의에서 DX11로 실습한 레이 트레이싱 장면을 DX12로 옮김. 업로드, 디스크립터 테이블, 상수 할당, PSO를 한 장면에서 모두 거치고, DX11 실습 화면을 정답으로 비교할 수 있어서 첫 목표로 정함.</p>
     <div class="row c2-wide">
       <figure>
         <img src="figures/06-ray-scene.jpg" alt="반사와 굴절이 보이는 구들이 바닥 위에 놓인 장면">
-        <figcaption>11/15 결과. 원본 장면은 modern_shinobi의 Shadertoy fsGcW3(<a href="https://www.shadertoy.com/view/fsGcW3">shadertoy.com/view/fsGcW3</a>)이고, 홍정모 그래픽스 Part 2 예제를 거쳐 옮김. 셰이더 코드는 싣지 않음.</figcaption>
+        <figcaption>11/15 결과. 원본 장면은 modern_shinobi의 Shadertoy fsGcW3(<a href="https://www.shadertoy.com/view/fsGcW3">shadertoy.com/view/fsGcW3</a>)이고, 홍정모 그래픽스 강의 예제를 거쳐 옮김. 셰이더 코드는 싣지 않음.</figcaption>
       </figure>
       <div>
         <ul>
           <li>래스터가 1차 교차(카메라 광선)를 맡고, 픽셀 셰이더는 그림자·반사·굴절 광선만 추적함.</li>
           <li>셰이더를 통째로 가져오지 않고 단계별로 다시 구현함. 재질 색 → 로컬 셰이딩 → 그림자 광선 → 반사와 Fresnel → 광선 스택과 굴절. 단계마다 식과 구조는 질의응답으로 정하고 구현은 에이전트가 함.</li>
           <li>재귀 대신 반사·굴절 비율을 미리 곱한 광선 스택을 씀. 깊이 우선이라 최대 깊이 + 1칸이면 충분함.</li>
-          <li>Part 2의 DX11 프로그램은 카메라와 해가 시간에 따라 움직여서, 두 프로그램을 같은 장면 시간(2, 5, 8초)에 멈춰 찍고 비교함. 구의 가림, 반사·굴절에 비친 위치, 그림자 방향이 같았음. 다른 점 둘(유리 구도 그림자를 드리움, 그림자 안 햇빛 0)은 의도한 단순화.</li>
+          <li>DX11 실습 프로그램은 카메라와 해가 시간에 따라 움직여서, 두 프로그램을 같은 장면 시간(2, 5, 8초)에 멈춰 찍고 비교함. 구의 가림, 반사·굴절에 비친 위치, 그림자 방향이 같았음. 다른 점 둘(유리 구도 그림자를 드리움, 그림자 안 햇빛 0)은 의도한 단순화.</li>
         </ul>
       </div>
     </div>
@@ -525,7 +525,7 @@ XMMATRIX Camera::View() const {
   <div class="stage">
     <div class="kicker">단계 8 · 11/17–18</div>
     <h2>직접광 PBR과 항별 확인</h2>
-    <p class="lead">점광원 하나의 직접광을 Cook-Torrance BRDF로 계산함. 에이전트가 BRDF 식을 비워 둔 틀을 만들고 내가 식을 채움.</p>
+    <p class="lead">점광원 하나의 직접광을 Cook-Torrance BRDF로 계산함.</p>
 
     <div class="formula">
       <div class="m">L = ( kD · albedo / π + D·F·G / (4 (n·l)(n·v)) ) · E · (n·l)</div>
@@ -573,7 +573,7 @@ XMMATRIX Camera::View() const {
   <div class="stage">
     <div class="kicker">단계 9 · 11/18–19</div>
     <h2>스포트라이트 그림자 맵</h2>
-    <p class="lead">강의 Part 3의 DX11 스포트라이트 그림자 예제를 기준으로 구 격자 장면에 그림자를 넣음. 에이전트가 API 호출 뼈대를 두고 비워 둔 판단 자리(광원 행렬, DSV·SRV의 형식과 자원, 그림자 PSO와 패스, 배리어 두 개, 가림 판정)를 내가 채움.</p>
+    <p class="lead">강의의 DX11 스포트라이트 그림자 예제를 기준으로 구 격자 장면에 그림자를 넣음.</p>
 
     <div class="row c2-wide">
       <figure>
@@ -625,7 +625,7 @@ list-&gt;Close();</pre>
   <div class="stage">
     <div class="kicker">단계 10 · 11/19</div>
     <h2>PCF와 그림자 맵 해상도 비교</h2>
-    <p class="lead">그림자 경계를 부드럽게 하려고 고정 3×3 PCF를 넣고, 그림자 맵 해상도와 깊이 bias에 따라 화질이 어떻게 달라지는지 비교함. 비교 샘플러와 3×3 커널은 내가 채움.</p>
+    <p class="lead">그림자 경계를 부드럽게 하려고 고정 3×3 PCF를 넣고, 그림자 맵 해상도와 깊이 bias에 따라 화질이 어떻게 달라지는지 비교함.</p>
 
     <div class="row c2">
       <div>
@@ -710,7 +710,6 @@ return shadowFactorSum / 9.0f;</pre>
       <li>창 크기 고정(리사이즈 없음). 장면은 정적이고 모델 파일을 읽지 않음.</li>
       <li>감마 보정, HDR, 톤 매핑이 없음. 선형 조명 결과를 sRGB 변환 없이 백버퍼(R8G8B8A8_UNORM)에 써서 어둡게 보임. 바닥 텍스처도 sRGB 값을 선형 값처럼 읽음. 색 공간 처리가 전체적으로 빠져 있음.</li>
       <li>환경광(IBL)이 없어 그림자 영역이 완전히 검음.</li>
-      <li>정점·인덱스 버퍼를 CPU가 쓰는 UPLOAD 힙에 둔 채 그림. 바뀌지 않는 메시는 한 번 복사해 GPU 전용 DEFAULT 힙에 두는 것이 일반적임.</li>
     </ul>
   </div>
 </section>
