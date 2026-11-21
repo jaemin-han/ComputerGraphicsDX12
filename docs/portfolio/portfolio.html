@@ -1,0 +1,737 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DX12 렌더러 학습 기록</title>
+<style>
+  :root {
+    --ink: #1c2024;
+    --ink-soft: #4a5260;
+    --ink-faint: #7a8291;
+    --rule: #dfe3e8;
+    --panel: #f4f6f8;
+    --accent: #2f5bd3;
+    --accent-soft: #eaf0fd;
+    --note: #8a5a1c;
+    --note-soft: #f8f1e6;
+    --draft: #c2410c;
+  }
+
+  @page { size: A4; margin: 0; }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    background: #ffffff;
+    color: var(--ink);
+    font-family: "Noto Sans KR", "Malgun Gothic", sans-serif;
+    font-size: 9.4pt;
+    line-height: 1.6;
+    word-break: keep-all;
+    overflow-wrap: break-word;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .page {
+    width: 210mm;
+    height: 297mm;
+    padding: 11mm 15mm 10mm;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    break-after: page;
+    position: relative;
+  }
+
+  @media screen {
+    html, body { background: #e9ecef; }
+    body { padding: 12mm 0; }
+    .page { background: #ffffff; box-shadow: 0 1px 6px rgba(0, 0, 0, .15); margin-bottom: 10mm; }
+    .page[data-overflow] { outline: 3px solid #e11d48; }
+  }
+
+  /* 초안 메모. 제출본에서는 아래 한 줄을 display: none 으로 바꾼다. */
+  .draft {
+    display: block;
+    border: 1px dashed var(--draft);
+    color: var(--draft);
+    font-size: 7.6pt;
+    padding: 1mm 2mm;
+    margin: 1.5mm 0;
+    border-radius: 3px;
+  }
+
+  .running {
+    display: flex;
+    justify-content: space-between;
+    font-size: 7.4pt;
+    color: var(--ink-faint);
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 1.8mm;
+    margin-bottom: 4mm;
+  }
+
+  .stage + .stage {
+    border-top: 1px solid var(--rule);
+    margin-top: 4.5mm;
+    padding-top: 4mm;
+  }
+
+  .kicker {
+    font-size: 8pt;
+    color: var(--accent);
+    font-weight: 700;
+    letter-spacing: .02em;
+  }
+
+  h1 { font-size: 22pt; line-height: 1.25; margin: 2mm 0 1mm; }
+  h2 { font-size: 15pt; line-height: 1.3; margin: .6mm 0 2mm; font-weight: 700; }
+  h3 { font-size: 10.2pt; margin: 3.4mm 0 1.4mm; font-weight: 700; }
+
+  p { margin: 0 0 1.8mm; }
+  ul { margin: 0 0 1.8mm; padding-left: 4.5mm; }
+  li { margin-bottom: .8mm; }
+
+  .sub { color: var(--ink-soft); font-size: 10pt; margin-bottom: 3mm; }
+  .lead { margin-bottom: 2.6mm; }
+
+  figure { margin: 0; }
+  figure img { display: block; width: 100%; border-radius: 3px; }
+  figcaption { font-size: 7.6pt; color: var(--ink-soft); margin-top: 1.2mm; line-height: 1.5; }
+
+  .row { display: grid; gap: 4mm; align-items: start; }
+  .row.c2 { grid-template-columns: 1fr 1fr; }
+  .row.c2-wide { grid-template-columns: 1.15fr 1fr; }
+  .row.c2-narrow { grid-template-columns: .8fr 1.2fr; }
+
+  .choice {
+    display: grid;
+    grid-template-columns: 12mm 1fr;
+    column-gap: 2.6mm;
+    row-gap: 1mm;
+    margin: 0 0 1.6mm;
+  }
+  .choice dt { font-size: 7.6pt; font-weight: 700; color: var(--ink-soft); padding-top: .5mm; }
+  .choice dt.pick { color: var(--accent); }
+  .choice dd { margin: 0; }
+
+  .code {
+    background: var(--panel);
+    border-radius: 5px;
+    padding: 2.2mm 2.8mm 2.4mm;
+    margin: 1.4mm 0;
+  }
+  .code .label { font-size: 7.4pt; font-weight: 700; color: var(--ink-soft); margin-bottom: 1mm; }
+  pre {
+    margin: 0;
+    font-family: "JetBrains Mono", "Noto Sans KR", Consolas, monospace;
+    font-size: 7.6pt;
+    line-height: 1.5;
+    white-space: pre;
+  }
+  /* JetBrains Mono의 합자가 -> 를 화살표로 바꾸지 않게 끈다. */
+  pre, code, .m {
+    font-variant-ligatures: none;
+    font-feature-settings: "liga" 0, "calt" 0;
+  }
+  code { font-family: "JetBrains Mono", "Noto Sans KR", Consolas, monospace; font-size: .92em; }
+  pre .c { color: #6b7685; }
+  pre .k { color: #7a3fb3; }
+  pre .hl { background: #fff1b8; border-radius: 2px; }
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 3mm; margin: 1.6mm 0 1mm; }
+  .compare .code { margin: 0; }
+
+  .note { font-size: 7.6pt; color: var(--ink-soft); }
+
+  .misstep {
+    border-left: 3px solid var(--note);
+    background: var(--note-soft);
+    border-radius: 0 5px 5px 0;
+    padding: 2mm 3.2mm;
+    margin-top: 2.4mm;
+  }
+  .misstep .label { font-size: 7.6pt; font-weight: 700; color: var(--note); margin-bottom: .4mm; }
+  .misstep p { margin: 0; }
+
+  .formula {
+    background: var(--accent-soft);
+    border-radius: 5px;
+    padding: 2.2mm 3mm;
+    margin: 1.6mm 0 2mm;
+    font-size: 8.6pt;
+  }
+  .formula .m { font-family: "JetBrains Mono", "Noto Sans KR", Consolas, monospace; font-size: 8pt; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 8.2pt; margin: 1.2mm 0 1.6mm; }
+  th, td { border-bottom: 1px solid var(--rule); padding: 1.2mm 1.6mm; text-align: left; vertical-align: top; }
+  th { font-weight: 700; color: var(--ink-soft); font-size: 7.6pt; background: var(--panel); }
+
+  /* 1쪽 */
+  .strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2.4mm; margin: 2mm 0 3mm; align-items: start; }
+  .meta { font-size: 8.6pt; color: var(--ink-soft); margin: -1.5mm 0 3mm; }
+  .meta a { color: var(--accent); text-decoration: none; }
+  .summary { font-size: 10.4pt; font-weight: 500; line-height: 1.55; margin-bottom: 2mm; }
+  .strip .card { font-size: 7pt; line-height: 1.35; color: var(--ink-soft); }
+  /* 그림 없는 칸은 같은 높이의 빈 자리에 밑줄만 둬서 글자 줄을 맞춘다. */
+  .strip .thumb.empty { background: transparent; border-bottom: 2px solid var(--rule); border-radius: 0; }
+  .strip .thumb {
+    aspect-ratio: 16 / 9;
+    border-radius: 2px;
+    overflow: hidden;
+    background: var(--panel);
+    margin-bottom: .8mm;
+  }
+  .strip .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .strip .card b { color: var(--ink); font-weight: 700; display: block; }
+  .scope { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm; }
+  .scope h3 { margin-top: 0; }
+  .env { font-size: 8pt; color: var(--ink-soft); border-top: 1px solid var(--rule); padding-top: 2mm; margin-top: auto; }
+
+  /* PBR 디버그 뷰 */
+  .views { display: grid; grid-template-columns: 1fr 1fr; gap: 2mm 3mm; margin: 1.6mm 0 1mm; }
+  .views figure figcaption { margin-top: .6mm; }
+  .views figcaption b { color: var(--ink); }
+
+  /* 비교 패널 */
+  .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 1.6mm 2mm; }
+  .panels .plabel { font-size: 7.2pt; font-weight: 700; color: var(--ink-soft); margin-bottom: .5mm; }
+  /* 흰 영역이 많은 그림(Shadow factor, kD 뷰)이 종이와 구분되게 얇은 테두리를 둔다. */
+  .panels img, .views img { border-radius: 2px; border: 1px solid #d5dae0; }
+</style>
+</head>
+<body>
+
+<!-- 1쪽: 개요 -->
+<section class="page" id="overview">
+  <div class="running"><span>DX12 렌더러 학습 기록</span><span>1 / 9</span></div>
+
+  <h1>DX12 렌더러 학습 기록</h1>
+  <p class="sub">DX11로 배운 그래픽스를 DX12로 옮기며 만든 작은 렌더러 · 2026.11.10 – 11.19</p>
+  <p class="meta">한재민 · 소스 코드 <a href="https://github.com/jaemin-han/ComputerGraphicsDX12">github.com/jaemin-han/ComputerGraphicsDX12</a></p>
+
+  <figure>
+    <img src="figures/00-final.jpg" alt="바닥 위 구 10개에 스포트라이트가 비추고 그림자가 드리운 최종 화면">
+    <figcaption>마지막 단계의 화면. 스포트라이트 직접광 PBR, 2048² 그림자 맵, 3×3 PCF. 선형 조명 결과를 sRGB 변환 없이 출력하고 환경광이 없어서, 어둡게 보이고 그림자가 완전히 검음(9쪽 한계).</figcaption>
+  </figure>
+
+  <p class="summary" style="margin-top:3mm">프레임별 명령 할당자·펜스·상수 버퍼를 몇 벌 두고 언제 다시 쓸지 정하고, Cook-Torrance 직접광 BRDF와 스포트라이트 그림자 맵(광원 행렬, 배리어, 가림 판정, PCF)의 핵심 로직을 작성한 작은 DX12 렌더러.</p>
+  <p>홍정모 그래픽스 강의 Part 1·2(DX11)를 마친 뒤, Part 3에서 배울 기능을 DX12로 옮기며 만들었음. DX11에서 런타임이 대신하던 프레임 동기화, 상수 메모리, 자원 상태 전환을 직접 다루는 것이 목표였음. 삼각형 하나에서 시작해 직접광 PBR과 그림자까지 간 과정을 날짜순으로 적음.</p>
+  <p>코딩 에이전트(Claude Code, Codex)와 함께 만들었음. 주요 설계 판단과 11/17 이후의 핵심 로직은 내가, 나머지 구현과 통합은 에이전트가 맡았음. 자세한 분담은 9쪽에 있음.</p>
+
+  <div class="strip">
+    <div class="card"><div class="thumb"><img src="figures/01-hello-triangle.jpg" alt=""></div><b>1 · Hello Triangle</b>11/10–12 · 2쪽</div>
+    <div class="card"><div class="thumb"><img src="figures/02-per-draw-constants.jpg" alt=""></div><b>2 · 프레임 2개, 드로우별 상수</b>11/13–14 · 2쪽</div>
+    <div class="card"><div class="thumb"><img src="figures/03-depth.jpg" alt=""></div><b>3 · 깊이 버퍼</b>11/13 · 3쪽</div>
+    <div class="card"><div class="thumb"><img src="figures/04-sky-pass.jpg" alt=""></div><b>4 · 텍스처, 디스크립터, 하늘</b>11/13–14 · 3쪽</div>
+    <div class="card"><div class="thumb"><img src="figures/06-ray-scene.jpg" alt=""></div><b>5 · 레이 씬</b>11/14–15 · 4쪽</div>
+    <div class="card"><div class="thumb"><img src="figures/06-imgui.jpg" alt=""></div><b>6 · ImGui, 1인칭 카메라</b>11/16 · 4쪽</div>
+    <div class="card"><div class="thumb"><img src="figures/07-sphere-grid.jpg" alt=""></div><b>7 · 구 격자와 재질 배치</b>11/16 · 5쪽</div>
+    <div class="card"><div class="thumb"><img src="figures/09-pbr-0-final.jpg" alt=""></div><b>8 · 직접광 PBR</b>11/17–18 · 6쪽</div>
+    <div class="card"><div class="thumb"><img src="figures/10-shadow-final.jpg" alt=""></div><b>9 · 스포트라이트 그림자</b>11/18–19 · 7쪽</div>
+    <div class="card"><div class="thumb"><img src="figures/11-pcf-after.jpg" alt=""></div><b>10 · PCF와 해상도 비교</b>11/19 · 8쪽</div>  </div>
+
+  <div class="scope">
+    <div>
+      <h3>만든 것</h3>
+      <p>프레임 2개 동시 진행, 프레임별 상수 선형 할당, 텍스처 업로드, 디스크립터 테이블, 패스별 PSO, 깊이 버퍼, 1인칭 쿼터니언 카메라, 직접광 PBR과 항별 디버그 뷰, 스포트라이트 그림자 맵, 3×3 PCF.</p>
+    </div>
+    <div>
+      <h3>하지 않은 것</h3>
+      <p>리사이즈(1920×1080 고정), 감마 보정·HDR·톤 매핑, IBL, 밉맵, 노멀 매핑, 모델 파일 로딩.</p>
+    </div>
+  </div>
+
+  <div class="env">C++17 · Direct3D 12 · HLSL(FXC, SM 5.1) · vcpkg(DirectXTex, Dear ImGui) · RTX 5070 · 디버그 레이어</div>
+</section>
+
+<!-- 2쪽: 단계 1, 2 -->
+<section class="page" id="stage-1-2">
+  <div class="running"><span>DX12 렌더러 학습 기록</span><span>2 / 9</span></div>
+
+  <div class="stage">
+    <div class="kicker">단계 1 · 11/10–12</div>
+    <h2>Hello Triangle: 한 프레임의 흐름</h2>
+    <p class="lead">에이전트가 구현한 Hello Triangle 코드로 DX12의 한 프레임을 학습함. 코드를 보지 않고 한 프레임을 처음부터 끝까지 설명하는 확인까지 마침.</p>
+    <div class="row c2-narrow">
+      <div>
+        <figure>
+          <img src="figures/01-hello-triangle.jpg" alt="파란 배경에 색이 보간된 삼각형 하나">
+          <figcaption>Hello Triangle. 첫 커밋을 다시 빌드해 찍음.</figcaption>
+        </figure>
+        <p style="margin-top:2mm">기록할 때 읽는 것(RTV 칸의 내용, 정점 버퍼 뷰)과 GPU가 실행할 때 읽는 것(할당자 메모리, 정점·상수 데이터, 셰이더가 읽는 디스크립터)을 구분함. 이 구분이 이후 "무엇을 프레임마다 따로 둘까"의 기준이 됨.</p>
+      </div>
+      <div class="code">
+        <div class="label">한 프레임 (첫 커밋, 요약)</div>
+<pre>allocator-&gt;Reset();         <span class="c">// 명령 메모리 재사용</span>
+list-&gt;Reset(allocator, pso);
+Transition(backBuffer, PRESENT, RENDER_TARGET);
+list-&gt;ClearRenderTargetView(rtv, color, 0, nullptr);
+list-&gt;OMSetRenderTargets(1, &amp;rtv, FALSE, nullptr);
+list-&gt;DrawInstanced(3, 1, 0, 0);
+Transition(backBuffer, RENDER_TARGET, PRESENT);
+list-&gt;Close();
+queue-&gt;ExecuteCommandLists(1, lists);
+swapChain-&gt;Present(1, 0);
+<span class="hl">WaitForGpu();</span>               <span class="c">// Signal 후 완료까지 대기</span></pre>
+      </div>
+    </div>
+    <p class="note">매 프레임 끝에서 GPU가 다 끝날 때까지 기다리므로 한 번에 한 프레임만 진행됨. 주석은 설명용으로 새로 씀.</p>
+  </div>
+
+  <div class="stage">
+    <div class="kicker">단계 2 · 11/13–14</div>
+    <h2>프레임 2개 동시 진행과 드로우별 상수</h2>
+    <p class="lead">프레임 끝의 대기를 없애고 프레임 2개가 동시에 진행되게 함. 같은 삼각형을 드로우별 상수(b0)만 바꿔 세 번 그림.</p>
+    <div class="row c2-wide">
+      <div>
+        <dl class="choice">
+          <dt class="pick">프레임별</dt>
+          <dd>명령 할당자, 그 프레임이 기다릴 펜스 값, 상수 버퍼. CPU가 쓰고 GPU가 나중에 읽기 때문.</dd>
+          <dt class="pick">하나만</dt>
+          <dd>큐, 커맨드 리스트, 펜스. 리스트는 명령을 할당자에 쓰므로 제출 직후 다른 할당자로 Reset할 수 있음. 펜스는 계속 커지는 숫자라 하나로 모든 프레임을 구분함.</dd>
+          <dt class="pick">상수</dt>
+          <dd>처음에는 프레임마다 업로드 버퍼 하나를 256바이트 칸으로 나눠 i번 드로우는 i번 칸에 씀. 크기가 다른 장면 상수(336바이트)가 섞이면서, 지금까지 쓴 바이트 수로 다음 위치를 정하고 256바이트 배수로 올리는 선형 할당으로 바꿈. b0는 루트 CBV로 넘김.</dd>
+          <dt>버린 안</dt>
+          <dd>디스크립터 테이블로 CBV 넘기기. 드로우마다 뷰를 만들고 그 칸의 수명까지 관리해야 함.</dd>
+        </dl>
+        <p class="note">DX11에서 <code>Map(WRITE_DISCARD)</code> 때 드라이버가 새 메모리를 주던 일을 앱이 맡음. 선형 할당의 오프셋은 그 프레임의 펜스 대기 뒤에만 0으로 되돌림. 임시 계측으로 프레임 시작 때 진행 중인 프레임 수를 세니 324프레임 중 320프레임에서 2개였음(vsync).</p>
+      </div>
+      <div>
+        <figure>
+          <img src="figures/02-per-draw-constants.jpg" alt="파란 배경에 같은 삼각형 세 개">
+          <figcaption>같은 정점 버퍼를 드로우마다 다른 b0로 세 번 그림.</figcaption>
+        </figure>
+        <div class="code">
+          <div class="label">현재 Render() 앞뒤 (요약)</div>
+<pre><span class="c">// 시작: 이 칸을 마지막으로 쓴 제출만 기다림</span>
+FrameResource &amp;frame = m_frames[m_frameIndex];
+<span class="hl">WaitForFenceValue(frame.fenceValue);</span>
+frame.ResetConstants();
+frame.commandAllocator-&gt;Reset();
+<span class="c">// ... 기록, 제출, Present ...</span>
+<span class="c">// 끝: 기다리지 않고 제출 번호만 기억</span>
+<span class="hl">frame.fenceValue = Signal();</span>
+m_frameIndex = (m_frameIndex + 1) % kFrameCount;</pre>
+        </div>
+      </div>
+    </div>
+    <div class="misstep">
+      <div class="label">처음 생각 → 바로잡은 것</div>
+      <p>처음에는 "직전 프레임을 기다린다"고 생각했음. 같은 칸을 마지막으로 쓴 것은 두 프레임 전이라 그 펜스 값까지만 기다림. 프레임 끝의 Signal은 기다리는 것이 아니라, 이 칸을 다시 쓸 때 기다릴 펜스 값을 남기는 것임.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 3쪽: 단계 3, 4 -->
+<section class="page" id="stage-3-4">
+  <div class="running"><span>DX12 렌더러 학습 기록</span><span>3 / 9</span></div>
+
+  <div class="stage">
+    <div class="kicker">단계 3 · 11/13</div>
+    <h2>3D 장면과 깊이 버퍼</h2>
+    <p class="lead">Part 2 예제의 배치대로 구 6개와 바닥을 그리고 노멀을 색으로 출력함. 깊이 버퍼 없이 먼저 그려 본 뒤 깊이 버퍼를 붙임.</p>
+    <div class="row c2">
+      <figure>
+        <img src="figures/03-no-depth.jpg" alt="초록 바닥이 구의 아랫부분을 덮은 화면">
+        <figcaption>깊이 버퍼 없음. 마지막에 그린 바닥이 구를 덮음.</figcaption>
+      </figure>
+      <figure>
+        <img src="figures/03-depth.jpg" alt="구가 바닥 위에 올바르게 보이는 화면">
+        <figcaption>깊이 버퍼 추가.</figcaption>
+      </figure>
+    </div>
+    <dl class="choice" style="margin-top:2mm">
+      <dt class="pick">고른 안</dt>
+      <dd>깊이 버퍼는 엔진에 하나. GPU만 읽고 쓰고, 프레임들은 한 큐에서 차례로 실행됨. CPU가 쓰고 GPU가 나중에 읽는 상수 버퍼와 다른 점.</dd>
+      <dt>버린 안</dt>
+      <dd>프레임별 두 벌.</dd>
+    </dl>
+    <p class="note">DEPTH_WRITE 상태로 만들어 그대로 두므로 배리어가 없음. 9단계 그림자 맵에서 같은 판단을 다시 씀.</p>
+  </div>
+
+  <div class="stage">
+    <div class="kicker">단계 4 · 11/13–14</div>
+    <h2>텍스처 업로드, 디스크립터 테이블, 하늘</h2>
+    <p class="lead">Poly Haven의 CC0 텍스처 3장(하늘 큐브맵은 배경·반사용과 확산광용 2장, 바닥 1장)을 GPU에 올리고 셰이더가 디스크립터 테이블로 읽게 함. 하늘은 별도 PSO로 먼저 그림.</p>
+    <div class="row c2-wide">
+      <div>
+        <h3 style="margin-top:0">업로드</h3>
+        <p>DirectXTex로는 파일을 CPU 이미지로 읽기까지만 하고, 업로드·복사·상태 전환은 엔진 코드에서 다루는 방식을 고름.</p>
+        <p class="note">COPY_DEST로 생성 → 업로드 버퍼에 행 간격을 256바이트에 맞춰 복사 → CopyTextureRegion → COPY_DEST에서 PIXEL_SHADER_RESOURCE로 배리어 → 제출 → 펜스 대기 → 업로드 버퍼 해제.</p>
+        <h3>디스크립터</h3>
+        <p>SRV 칸은 초기화 때 한 번 쓰고 읽기만 하므로 프레임별로 나누지 않음. 세 장을 연속 칸에 두고 테이블 하나로 묶음. 샘플러는 정적 샘플러.</p>
+        <h3>하늘</h3>
+        <dl class="choice">
+          <dt class="pick">고른 안</dt>
+          <dd>맨 먼저 깊이 테스트와 쓰기 없이 그림. 앞면을 버려 같은 구 메시를 안쪽에서 봄.</dd>
+          <dt>버린 안</dt>
+          <dd>맨 마지막에 깊이 테스트로 그리기. 깊이를 1로 고정하지 않고 반지름 10인 구를 그대로 쓰면, 12보다 멀리 있는 바닥 모서리를 하늘이 가림.</dd>
+        </dl>
+        <p class="note">깊이 상태와 컬링이 달라 PSO를 따로 둠.</p>
+      </div>
+      <div>
+        <figure>
+          <img src="figures/04-sky-pass.jpg" alt="구름 낀 하늘 아래 바닥과 구">
+          <figcaption>하늘 패스 추가. 확인용 PS가 모든 메시에 바닥 텍스처를 입힘.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 4쪽: 단계 5, 6 -->
+<section class="page" id="stage-5-6">
+  <div class="running"><span>DX12 렌더러 학습 기록</span><span>4 / 9</span></div>
+
+  <div class="stage">
+    <div class="kicker">단계 5 · 11/14–15</div>
+    <h2>레이 씬: 기반 기능을 한 장면에서 검증</h2>
+    <p class="lead">Part 2에서 DX11로 실습한 레이 트레이싱 장면을 DX12로 옮김. 업로드, 디스크립터 테이블, 상수 할당, PSO를 한 장면에서 모두 거치고, Part 2 실행 화면을 정답으로 비교할 수 있어서 첫 목표로 정함.</p>
+    <div class="row c2-wide">
+      <figure>
+        <img src="figures/06-ray-scene.jpg" alt="반사와 굴절이 보이는 구들이 바닥 위에 놓인 장면">
+        <figcaption>11/15 결과. 원본 장면은 modern_shinobi의 Shadertoy fsGcW3(<a href="https://www.shadertoy.com/view/fsGcW3">shadertoy.com/view/fsGcW3</a>)이고, 홍정모 그래픽스 Part 2 예제를 거쳐 옮김. 셰이더 코드는 싣지 않음.</figcaption>
+      </figure>
+      <div>
+        <ul>
+          <li>래스터가 1차 교차(카메라 광선)를 맡고, 픽셀 셰이더는 그림자·반사·굴절 광선만 추적함.</li>
+          <li>셰이더를 통째로 가져오지 않고 단계별로 다시 구현함. 재질 색 → 로컬 셰이딩 → 그림자 광선 → 반사와 Fresnel → 광선 스택과 굴절. 단계마다 식과 구조는 질의응답으로 정하고 구현은 에이전트가 함.</li>
+          <li>재귀 대신 반사·굴절 비율을 미리 곱한 광선 스택을 씀. 깊이 우선이라 최대 깊이 + 1칸이면 충분함.</li>
+          <li>Part 2의 DX11 프로그램은 카메라와 해가 시간에 따라 움직여서, 두 프로그램을 같은 장면 시간(2, 5, 8초)에 멈춰 찍고 비교함. 구의 가림, 반사·굴절에 비친 위치, 그림자 방향이 같았음. 다른 점 둘(유리 구도 그림자를 드리움, 그림자 안 햇빛 0)은 의도한 단순화.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="kicker">단계 6 · 11/16</div>
+    <h2>ImGui와 1인칭 카메라</h2>
+    <p class="lead">ImGui 창을 붙이고, 궤도 카메라를 언리얼 에디터 뷰포트처럼 움직이는 1인칭 카메라로 바꿈.</p>
+    <p>ImGui: 셰이더 가시 힙을 4칸으로 늘려 폰트 SRV를 3번 칸에 둠. 0~2번 텍스처 칸은 그대로라 테이블 설정이 바뀌지 않음. ImGui 백엔드는 자기 PSO와 루트 시그니처를 묶어서 장면 뒤 맨 마지막에 그림.</p>
+    <dl class="choice">
+      <dt class="pick">고른 안</dt>
+      <dd>yaw, pitch 두 각도로 저장하고 매 프레임 쿼터니언으로 회전을 만듦. 이 카메라는 roll을 두지 않음.</dd>
+      <dt>버린 안</dt>
+      <dd>카메라 자기 축으로 쿼터니언을 누적(트랙볼 방식). 원을 그리면 회전이 교환되지 않아 시선 축 회전이 쌓이고 지평선이 기울어짐.</dd>
+      <dt>버린 안</dt>
+      <dd>행렬만 쓰기. 화면은 같지만 쿼터니언을 직접 써 보려고 택하지 않음.</dd>
+    </dl>
+    <div class="row c2">
+      <div>
+        <p>뷰 행렬은 카메라 모델 행렬 <i>R(q)·T(p)</i>(DirectXMath 행 벡터 기준)의 역이라 곱 순서가 뒤집혀 <i>T(−p)·R(q*)</i>가 됨. 단위 쿼터니언의 역회전은 벡터 부분의 부호만 뒤집은 켤레 <i>q*</i>임. 처음에는 축별 쿼터니언을 반대 각도로 다시 만들자고 생각했음.</p>
+        <p class="note">확인: 같은 위치와 방향에서 기존 <code>XMMatrixLookAtLH</code> 화면과 쿼터니언 뷰 화면이 같음. 커서를 200픽셀 옮기면 yaw가 34.4°(200 × 0.003 rad) 돌고 지평선은 수평을 유지함.</p>
+      </div>
+      <div class="code">
+        <div class="label">src/Camera.cpp</div>
+<pre>XMVECTOR Camera::Orientation() const {
+    const XMVECTOR pitch = XMQuaternionRotationAxis(
+        XMVectorSet(1, 0, 0, 0), m_pitch);
+    const XMVECTOR yaw = XMQuaternionRotationAxis(
+        XMVectorSet(0, 1, 0, 0), m_yaw);
+    <span class="c">// pitch 다음 yaw(월드 y축)</span>
+    return XMQuaternionMultiply(pitch, yaw);
+}
+
+XMMATRIX Camera::View() const {
+    const XMVECTOR inverse =
+        <span class="hl">XMQuaternionConjugate(Orientation());</span>
+    return XMMatrixTranslation(-m_position.x,
+               -m_position.y, -m_position.z) *
+           XMMatrixRotationQuaternion(inverse);
+}</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 5쪽: 단계 7 -->
+<section class="page" id="stage-7">
+  <div class="running"><span>DX12 렌더러 학습 기록</span><span>5 / 9</span></div>
+
+  <div class="stage">
+    <div class="kicker">단계 7 · 11/16</div>
+    <h2>구 격자 장면과 재질 배치</h2>
+    <p class="lead">레이 씬을 직접광 PBR을 확인할 장면으로 바꿈.</p>
+
+    <figure>
+      <img src="figures/07-sphere-grid.jpg" alt="바닥 위에 앞줄 빨간 구 5개, 뒷줄 금색 구 5개가 놓인 장면">
+      <figcaption>PBR을 넣기 전의 임시 셰이딩. 환경광은 하늘 irradiance 큐브맵을 노멀 방향으로 읽고, 해(방향광)는 Lambert(n·l)로 더함. metallic과 roughness는 값만 넣어 두었고 다음 단계부터 화면에 반영됨.</figcaption>
+    </figure>
+
+    <h3>장면 배치</h3>
+    <dl class="choice">
+      <dt class="pick">고른 안</dt>
+      <dd>반지름 0.4인 구 10개를 2줄 × 5개로 바닥에 닿게 놓음. 앞줄은 비금속(빨간 플라스틱), 뒷줄은 금속(금)이고, 왼쪽에서 오른쪽으로 roughness를 0에서 1로 올림.</dd>
+      <dt>버린 안</dt>
+      <dd>metallic × roughness 5 × 5 차트. 실제 재질은 metallic이 거의 0 아니면 1이라 중간 줄이 필요 없음.</dd>
+      <dt>버린 안</dt>
+      <dd>구를 공중에 세로로 늘어놓은 판. 구가 바닥에 닿아 있어야 다음 그림자 단계에서 접점 주변의 그림자를 확인할 수 있음.</dd>
+    </dl>
+
+    <h3>재질을 어느 상수 버퍼에 둘까</h3>
+    <p>레이 씬에서는 재질을 프레임마다 한 번 쓰는 b1에 배열로 모으고, 드로우마다 쓰는 b0에는 재질 대신 물체 인덱스를 넣었음. 픽셀 셰이더가 쏜 반사·굴절 광선이 다른 구와 부딪히면 그 구의 재질도 읽어야 했기 때문임.</p>
+    <p>구 격자에서는 재질을 b0에 직접 넣음. 래스터 PBR에서 픽셀 셰이더는 지금 그리는 표면의 재질만 읽음. 직접광은 이 표면의 값으로 계산하고, 주변 환경의 반사는 다른 물체를 찾는 대신 환경 맵으로 근사함. 이 렌더러의 최종 버전에는 환경 맵 기반 IBL이 없음.</p>
+
+    <div class="compare">
+      <div class="code">
+        <div class="label">레이 씬 (11/15)</div>
+<pre><span class="c">// b0: 드로우마다</span>
+<span class="k">struct</span> MeshConstants {
+    XMFLOAT4X4 model, invTranspose,
+               view, projection;
+    <span class="hl">int objectIndex;</span>  <span class="c">// 0~5 구, 6 바닥</span>
+};
+
+<span class="c">// b1: 프레임마다, 모든 드로우가 공유</span>
+<span class="k">struct</span> SceneConstants {
+    XMFLOAT3 eyeWorld;
+    XMFLOAT3 lightDirection;
+    <span class="hl">Sphere spheres[6];</span>  <span class="c">// 중심, 반지름, 재질</span>
+};</pre>
+      </div>
+      <div class="code">
+        <div class="label">구 격자 (11/16)</div>
+<pre><span class="c">// b0: 드로우마다</span>
+<span class="k">struct</span> MeshConstants {
+    XMFLOAT4X4 model, invTranspose,
+               view, projection;
+    <span class="hl">Material material;</span>  <span class="c">// 이 표면의 재질</span>
+};
+
+<span class="c">// b1: 프레임마다, 모든 드로우가 공유</span>
+<span class="k">struct</span> SceneConstants {
+    XMFLOAT3 eyeWorld;
+    XMFLOAT3 lightDirection;
+};</pre>
+      </div>
+    </div>
+    <p class="note">src/ConstantBuffers.h 발췌. 행렬 선언을 묶고 padding과 바닥 교차 정보는 뺌.</p>
+
+    <div class="misstep">
+      <div class="label">처음 생각 → 바로잡은 것</div>
+      <p>처음에는 "반사가 있으니 b1에 모아야 한다"고 생각했음. 레이 씬의 반사 광선과 래스터 PBR의 반사를 구분하고 나서 b0로 정함.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 6쪽: 단계 8 -->
+<section class="page" id="stage-8">
+  <div class="running"><span>DX12 렌더러 학습 기록</span><span>6 / 9</span></div>
+
+  <div class="stage">
+    <div class="kicker">단계 8 · 11/17–18</div>
+    <h2>직접광 PBR과 항별 확인</h2>
+    <p class="lead">점광원 하나의 직접광을 Cook-Torrance BRDF로 계산함. 에이전트가 BRDF 식을 비워 둔 틀을 만들고 내가 식을 채움.</p>
+
+    <div class="formula">
+      <div class="m">L = ( kD · albedo / π + D·F·G / (4 (n·l)(n·v)) ) · E · (n·l)</div>
+      <div style="margin-top:1mm">F는 Schlick(v·h, F0 = lerp(0.04, albedo, metallic)), D는 GGX(α = roughness²), G는 Smith Schlick-GGX(k = (roughness + 1)² / 8), kD = (1 − F)(1 − metallic). E는 빛을 수직으로 받는 면의 irradiance.</div>
+    </div>
+
+    <div class="row c2">
+      <dl class="choice">
+        <dt class="pick">π 관례</dt>
+        <dd>BRDF에 Lambert의 1/π를 남기고 광원 값을 irradiance로 둠. 기본 세기 π에서 빛을 정면으로 받는 흰 Lambert 면이 감쇠 전 albedo 그대로 보임.</dd>
+        <dt>버린 안</dt>
+        <dd>강의 예제처럼 diffuse에서만 1/π를 빼기. specular는 그대로라 두 항의 비율이 π만큼 달라짐.</dd>
+      </dl>
+      <dl class="choice">
+        <dt class="pick">확인 방법</dt>
+        <dd>항마다 디버그 뷰를 두고 화면 값으로 확인함. roughness 1 구의 D는 1/π라 약 81/255, 비금속의 F는 약 0.04라 약 10/255.</dd>
+        <dt>버린 안</dt>
+        <dd>강의 예제의 정답 화면과 나란히 비교. π 관례와 HDR·감마 후처리가 달라 같은 화면이 나오지 않음. 항별 확인은 어느 항이 틀렸는지까지 알려 줌.</dd>
+      </dl>
+    </div>
+
+    <div class="views">
+      <figure><img src="figures/09-pbr-1-fresnel.jpg" alt=""><figcaption><b>1 · Fresnel F.</b> 비금속은 F0 = 0.04에 가까워 어둡고, 금속은 F0가 base color라 금색.</figcaption></figure>
+      <figure><img src="figures/09-pbr-2-distribution.jpg" alt=""><figcaption><b>2 · GGX D.</b> roughness 0.25의 작은 점이 거칠수록 퍼짐. 맨 오른쪽은 1/π.</figcaption></figure>
+      <figure><img src="figures/09-pbr-3-geometry.jpg" alt=""><figcaption><b>3 · Smith G.</b> 빛이나 시선이 표면을 스칠수록 작아져 경계가 어두움.</figcaption></figure>
+      <figure><img src="figures/09-pbr-4-kdiffuse.jpg" alt=""><figcaption><b>4 · kD.</b> 금속은 1 − metallic이 0이라 검음.</figcaption></figure>
+      <figure><img src="figures/09-pbr-5-diffuse-brdf.jpg" alt=""><figcaption><b>5 · 확산 BRDF.</b> albedo / π가 곱해져 색과 바닥 텍스처가 드러남.</figcaption></figure>
+      <figure><img src="figures/09-pbr-6-specular-brdf.jpg" alt=""><figcaption><b>6 · 정반사 BRDF.</b> 금속의 하이라이트가 거칠수록 넓고 어두워짐.</figcaption></figure>
+      <figure><img src="figures/09-pbr-7-brdf.jpg" alt=""><figcaption><b>7 · BRDF 합.</b> 반사 비율일 뿐이라 빛의 양이 없어 평평함.</figcaption></figure>
+      <figure><img src="figures/09-pbr-0-final.jpg" alt=""><figcaption><b>0 · 최종.</b> × irradiance × n·l. 광원 쪽이 밝고 아래 경계가 검음.</figcaption></figure>
+    </div>
+    <p class="note">점광원 (0, 2, 3), 세기 π. 앞줄 비금속, 뒷줄 금속, 왼쪽부터 roughness 0 → 1. 디버그 뷰는 광원 값과 n·l을 곱하기 전이고 1을 넘으면 흰색으로 잘림. roughness 0 구는 이 구현에서 D가 0이 되어(0/0을 막으려고 분모에 작은 값을 더함) 점광원 하이라이트가 없고, 금속은 확산도 0이라 검게 보임.</p>
+
+    <div class="misstep">
+      <div class="label">처음 생각 → 바로잡은 것</div>
+      <p>처음 채운 DirectLighting은 BRDF를 그대로 돌려줘서 화면이 7번 뷰와 같았음. 반사율 방정식에서 점광원 하나만 남기면 BRDF에 들어오는 빛(irradiance)과 n·l을 곱해야 함.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 7쪽: 단계 9 -->
+<section class="page" id="stage-9">
+  <div class="running"><span>DX12 렌더러 학습 기록</span><span>7 / 9</span></div>
+
+  <div class="stage">
+    <div class="kicker">단계 9 · 11/18–19</div>
+    <h2>스포트라이트 그림자 맵</h2>
+    <p class="lead">강의 Part 3의 DX11 스포트라이트 그림자 예제를 기준으로 구 격자 장면에 그림자를 넣음. 에이전트가 API 호출 뼈대를 두고 비워 둔 판단 자리(광원 행렬, DSV·SRV의 형식과 자원, 그림자 PSO와 패스, 배리어 두 개, 가림 판정)를 내가 채움.</p>
+
+    <div class="row c2-wide">
+      <figure>
+        <img src="figures/10-shadow-final.jpg" alt="구 10개가 오른쪽 뒤로 그림자를 드리운 화면">
+        <figcaption>2048² 그림자 맵, 한 텍셀 비교(PCF 전). 광원은 왼쪽 앞 위 (−2, 4, 2.5)에서 격자 가운데를 겨눔.</figcaption>
+      </figure>
+      <figure>
+        <img src="figures/10-shadow-map-fov45.jpg" alt="광원에서 본 깊이 화면, 가장자리 구가 잘림">
+        <figcaption>FOV 45°일 때 광원에서 본 그림자 맵 깊이(가까울수록 어두움). 가장자리 구가 맵 밖으로 잘림.</figcaption>
+      </figure>
+    </div>
+
+    <dl class="choice" style="margin-top:2.4mm">
+      <dt class="pick">광원</dt>
+      <dd>스포트라이트. 그림자 맵 한 장은 투영 하나로 장면을 담음. 점광원은 큐브 6면, 방향광은 직교 투영이 필요함.</dd>
+      <dt class="pick">자원</dt>
+      <dd>그림자 맵 한 장(R32_TYPELESS)에 뷰 두 개를 초기화 때 만들어 둠. 그림자 패스는 DSV(D32_FLOAT)로 깊이를 쓰고, 메인 패스는 SRV(R32_FLOAT)로 읽음. 광원이 움직여도 뷰는 그대로이고, 바뀌는 광원 행렬만 프레임별 b1로 넘김. 깊이 버퍼처럼 프레임별로 나누지 않음.</dd>
+      <dt class="pick">상태</dt>
+      <dd>프레임 경계에서는 늘 DEPTH_WRITE. 그림자 패스 뒤 PIXEL_SHADER_RESOURCE로 바꾸고 Close() 전에 되돌림. 백버퍼의 PRESENT와 같은 약속.</dd>
+      <dt class="pick">FOV 70°</dt>
+      <dd>45°에서 구 3개가 맵 밖으로 잘림. 광원 뷰 공간에서 구마다 필요한 반각을 계산하니 최소 약 61°(뒷줄 왼쪽 구). 광원을 옮길 여유를 두어 70°로 정함. 강의 예제의 120°는 같은 해상도에서 텍셀 한 변이 약 2.5배(면적은 약 6배) 커짐. 그림자 진 바닥은 광원에서 보면 구 뒤에 가려지므로, 그림자를 드리우는 구만 맵 안에 들면 됨.</dd>
+    </dl>
+
+    <div class="code">
+      <div class="label">src/Engine.cpp, Render() 요약 (상태 이름의 D3D12_RESOURCE_STATE_ 접두어 생략)</div>
+<pre><span class="c">// 1. 그림자 패스: 렌더 타깃 없이 광원 시점의 깊이만 씀</span>
+list-&gt;ClearDepthStencilView(shadowDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+list-&gt;OMSetRenderTargets(0, nullptr, FALSE, &amp;shadowDsv);
+DrawScene(frame, lightView, lightProjection);
+<span class="hl">Transition(m_shadowMap.Get(), DEPTH_WRITE, PIXEL_SHADER_RESOURCE);</span>
+
+<span class="c">// 2. 메인 패스: 하늘 → 구 격자와 바닥(메시 PS가 t3으로 그림자 맵을 읽음) → ImGui</span>
+Transition(backBuffer, PRESENT, RENDER_TARGET);
+DrawScene(frame, view, projection);
+
+<span class="c">// 프레임 끝: 다음 프레임의 출발 상태로 되돌림. 배리어도 기록하는 명령이라 Close() 전</span>
+Transition(backBuffer, RENDER_TARGET, PRESENT);
+<span class="hl">Transition(m_shadowMap.Get(), PIXEL_SHADER_RESOURCE, DEPTH_WRITE);</span>
+list-&gt;Close();</pre>
+    </div>
+    <p class="note">남은 것: 구의 명암 경계(n·l ≈ 0)를 따라 acne 띠가 있음. 그곳은 n·l이 0에 가까워 최종 화면에서는 거의 보이지 않음.</p>
+  </div>
+</section>
+
+<!-- 8쪽: 단계 10 -->
+<section class="page" id="stage-10">
+  <div class="running"><span>DX12 렌더러 학습 기록</span><span>8 / 9</span></div>
+
+  <div class="stage">
+    <div class="kicker">단계 10 · 11/19</div>
+    <h2>PCF와 그림자 맵 해상도 비교</h2>
+    <p class="lead">그림자 경계를 부드럽게 하려고 고정 3×3 PCF를 넣고, 그림자 맵 해상도와 깊이 bias에 따라 화질이 어떻게 달라지는지 비교함. 비교 샘플러와 3×3 커널은 내가 채움.</p>
+
+    <div class="row c2">
+      <div>
+        <h3 style="margin-top:0">PCF 전후</h3>
+        <div class="panels">
+          <figure><div class="plabel">PCF 전 · 한 텍셀 비교</div><img src="figures/11-pcf-before.jpg" alt=""></figure>
+          <figure><div class="plabel">3×3 PCF</div><img src="figures/11-pcf-after.jpg" alt=""></figure>
+          <figure><div class="plabel">Shadow factor, 바닥 경계 3배 확대</div><img src="figures/11-pcf-before-factor.jpg" alt=""></figure>
+          <figure><div class="plabel">Shadow factor, 바닥 경계 3배 확대</div><img src="figures/11-pcf-after-factor.jpg" alt=""></figure>
+        </div>
+        <p class="note" style="margin-top:1.4mm">2048², bias 1e-4, 같은 카메라와 광원. 한 텍셀 비교는 경계가 계단처럼 바뀌고, 3×3 PCF는 선형 비교 샘플 9개의 평균이라 좁은 회색 전이가 생김. Shadow factor는 빛을 받으면 흰색, 가려지면 검정.</p>
+      </div>
+      <div>
+        <h3 style="margin-top:0">해상도 × 깊이 bias</h3>
+        <div class="panels">
+          <figure><div class="plabel">2048² · bias 1e-4</div><img src="figures/11-bias-2048-1e-4.jpg" alt=""></figure>
+          <figure><div class="plabel">256² · bias 1e-4</div><img src="figures/11-bias-256-1e-4.jpg" alt=""></figure>
+          <figure><div class="plabel">2048² · bias 1e-3</div><img src="figures/11-bias-2048-1e-3.jpg" alt=""></figure>
+          <figure><div class="plabel">256² · bias 1e-3</div><img src="figures/11-bias-256-1e-3.jpg" alt=""></figure>
+        </div>
+        <p class="note" style="margin-top:1.4mm">3×3 PCF, 구를 가까이 본 같은 카메라. 256²에서 bias 1e-4는 구와 바닥에 굵은 줄무늬(shadow acne)가 생기고, 1e-3으로 키우면 대부분 줄어듦. 256²는 텍셀 한 변이 2048²의 8배라 3×3 PCF가 바닥에서 덮는 폭도 넓어서, 그림자 경계가 더 넓게 번져 부드러워 보임. 광원 크기를 반영한 반그림자는 아님.</p>
+      </div>
+    </div>
+
+    <div class="code" style="margin-top:3mm">
+      <div class="label">shaders/MeshPixelShader.hlsl, ShadowFactor() 끝부분</div>
+<pre><span class="c">// 같은 표면이 정밀도 오차로 자기를 가리지 않도록 기준 깊이를 당김</span>
+float compareDepth = posDepth - 1e-4f;
+
+uint width, height;
+shadowMap.GetDimensions(width, height);
+float2 texelSize = 1.0f / float2(width, height);
+
+float shadowFactorSum = 0.0f;
+for (int i = 0; i &lt; 9; i++)   <span class="c">// offsets: (-1,-1) ~ (1,1)</span>
+{
+    float2 sampleUV = uv + texelSize * offsets[i];
+    shadowFactorSum += <span class="hl">shadowMap.SampleCmpLevelZero(</span>
+        <span class="hl">shadowCompareSampler, sampleUV, compareDepth);</span>
+}
+return shadowFactorSum / 9.0f;</pre>
+    </div>
+  </div>
+</section>
+
+<!-- 9쪽: 작업 방식과 한계 -->
+<section class="page" id="method">
+  <div class="running"><span>DX12 렌더러 학습 기록</span><span>9 / 9</span></div>
+
+  <div class="stage">
+    <div class="kicker">정리</div>
+    <h2>작업 방식, 분담, 한계</h2>
+
+    <h3 style="margin-top:1mm">분담</h3>
+    <table>
+      <thead><tr><th style="width:24%">시기</th><th style="width:40%">내가 한 것</th><th>에이전트가 한 것</th></tr></thead>
+      <tbody>
+        <tr><td>11/10–12 · 단계 1</td><td>한 프레임 흐름 학습, 코드 없이 설명하는 확인</td><td>Hello Triangle 구현</td></tr>
+        <tr><td>11/13–16 · 단계 2~7</td><td>자원을 몇 벌 둘지, 배리어 위치, 디스크립터 배치, 장면 구성 같은 주요 설계를 질의응답으로 결정</td><td>구현과 통합, 빌드와 실행 확인. 레이 씬 셰이더 구현, 카메라 입력 방식, 텍스처 자산 준비</td></tr>
+        <tr><td>11/17–19 · 단계 8~10</td><td>BRDF 식, 광원 행렬, DSV·SRV의 형식과 자원, 그림자 PSO와 패스, 배리어, 가림 판정, PCF 커널. 에이전트가 비워 둔 판단 자리와 셰이더 식을 채움</td><td>API 호출 뼈대와 연결 코드, ImGui 조작부, 빌드와 실행 확인, 캡처와 비교 그림 정리</td></tr>
+      </tbody>
+    </table>
+
+    <h3>작업 방식</h3>
+    <ul>
+      <li>기능을 하나씩 더함. 강의의 DX11 예제는 줄 단위로 옮기지 않고 무엇을 그려야 하는지의 기준으로 읽음.</li>
+      <li>기능마다 고른 안, 버린 안, 처음 생각을 기록하고, 코드를 보지 않고 설명한 뒤 에이전트의 질문으로 확인함.</li>
+      <li>확인 기준은 Debug 빌드에서 디버그 레이어 메시지 없음.</li>
+    </ul>
+
+    <h3>이해의 깊이</h3>
+    <table>
+      <tbody>
+        <tr><td style="width:24%"><b>직접 설명할 수 있음</b></td><td>코드를 보지 않고 동작과 이유를 말할 수 있는 부분. 프레임 자원과 펜스, 배리어와 자원 상태, 디스크립터 테이블과 루트 시그니처, PBR 식, 그림자 좌표 변환.</td></tr>
+        <tr><td><b>하는 일만 앎</b></td><td>무엇을 하는지는 알지만 세부 코드는 에이전트가 짠 부분. 디바이스와 스왑체인 초기화, 업로드 세부, 창 처리, ImGui 연결.</td></tr>
+        <tr><td><b>라이브러리</b></td><td>DirectXTex(이미지 파일 읽기), Dear ImGui.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>한계</h3>
+    <ul>
+      <li>창 크기 고정(리사이즈 없음). 장면은 정적이고 모델 파일을 읽지 않음.</li>
+      <li>감마 보정, HDR, 톤 매핑이 없음. 선형 조명 결과를 sRGB 변환 없이 백버퍼(R8G8B8A8_UNORM)에 써서 어둡게 보임. 바닥 텍스처도 sRGB 값을 선형 값처럼 읽음. 색 공간 처리가 전체적으로 빠져 있음.</li>
+      <li>환경광(IBL)이 없어 그림자 영역이 완전히 검음.</li>
+      <li>정점·인덱스 버퍼를 CPU가 쓰는 UPLOAD 힙에 둔 채 그림. 바뀌지 않는 메시는 한 번 복사해 GPU 전용 DEFAULT 힙에 두는 것이 일반적임.</li>
+    </ul>
+  </div>
+</section>
+
+<script>
+  // 화면 확인용: 주소에 ?page=N 을 붙이면 그 쪽만 보인다. 인쇄에는 영향이 없다.
+  const onlyPage = new URLSearchParams(location.search).get('page');
+  if (onlyPage) {
+    document.querySelectorAll('.page').forEach((page, i) => {
+      if (String(i + 1) !== onlyPage) page.style.display = 'none';
+    });
+  }
+
+  // 화면 표시용 점검: 내용이 A4 높이를 넘친 쪽에 data-overflow(넘친 px)를 단다.
+  window.addEventListener('load', () => {
+    document.querySelectorAll('.page').forEach((page) => {
+      const over = page.scrollHeight - page.clientHeight;
+      if (over > 1) page.dataset.overflow = String(over);
+    });
+    document.body.dataset.checked = '1';
+  });
+</script>
+</body>
+</html>
